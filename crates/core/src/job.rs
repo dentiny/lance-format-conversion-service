@@ -57,8 +57,16 @@ pub struct Job {
     pub creation_timestamp_ms: i64,
     pub update_timestamp_ms: i64,
     pub attempt: u32,
+    pub error_reasons: Vec<JobError>,
     pub lease_expiration_timestamp_ms: Option<i64>,
     pub progress: JobProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobError {
+    pub attempt: u32,
+    pub error_timestamp_ms: i64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]

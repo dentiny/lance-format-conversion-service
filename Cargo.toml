@@ -24,20 +24,20 @@ all = "warn"
 pedantic = "warn"
 
 [workspace.dependencies]
-async-trait = "0.1.92"
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
-clap = { version = "4.6.6", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+clap = { version = "4.6", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 lance-conversion-core = { path = "crates/core" }
 lance-job-store = { path = "crates/job-store" }
 lance-job-store-factory = { path = "crates/job-store-factory" }
 lance-job-store-sqlite = { path = "crates/job-store-sqlite" }
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
-serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
-thiserror = { version = "2.0.20", default-features = false }
-tokio = { version = "1.53.1", default-features = false }
-tower = { version = "0.5.3", default-features = false, features = ["util"] }
-uuid = { version = "1.24.0", default-features = false, features = ["v4", "serde"] }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+thiserror = { version = "2.0", default-features = false }
+tokio = { version = "1.53", default-features = false }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+uuid = { version = "1.24", default-features = false, features = ["v4", "serde"] }
 
 [profile.release]
 lto = "thin"

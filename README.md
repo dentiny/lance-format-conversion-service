@@ -45,8 +45,9 @@ deletion, and orphan cleanup.
 - Add a reconciliation task that cleans up terminal jobs after configurable
   age and retained-count thresholds. MVP records are retained indefinitely;
   running and queuing jobs must never be removed by retention cleanup.
-- Define a retry policy and upper bound for the job attempt counter. MVP only
-  requires attempts to remain non-negative.
+- In the next milestone, implement retry transitions with a maximum of 16
+  attempts and append one structured error entry containing the attempt,
+  timestamp, and reason for every failed attempt.
 - In the final production-hardening milestone, add structured tracing,
   `jemalloc`, and request-triggered CPU and memory profiling.
 

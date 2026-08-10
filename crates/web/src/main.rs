@@ -11,12 +11,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let store = connect(&config.database_url).await?;
     let listener = tokio::net::TcpListener::bind(config.listen_address).await?;
 
-    axum::serve(listener, router(store))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(listener, router(store)).await?;
     Ok(())
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }

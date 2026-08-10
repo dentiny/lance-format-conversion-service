@@ -15,7 +15,8 @@ async-trait.workspace = true
 lance-conversion-core.workspace = true
 lance-job-store.workspace = true
 rusqlite.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["fs", "rt"] }
 uuid.workspace = true
 
 [dev-dependencies]

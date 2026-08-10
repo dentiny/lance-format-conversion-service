@@ -13,7 +13,7 @@ use rusqlite::{
 use uuid::Uuid;
 
 use lance_conversion_core::job::{
-    ClaimedJob, Job, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate,
+    ClaimedJob, Job, JobError, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate,
 };
 use lance_job_store::{JobStore, StoreError};
 
@@ -22,8 +22,8 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const PROGRESS_FIELD_COUNT: usize = 6;
 const INITIAL_ATTEMPT: u32 = 0;
 const JOB_COLUMNS: &str = "id, creator, kind, source_uri, destination_uri, \
-    status, creation_timestamp_ms, update_timestamp_ms, attempt, lease_expiration_timestamp_ms, \
-    source_bytes_read, lance_bytes_written, rows_read, \
+    status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json, \
+    lease_expiration_timestamp_ms, source_bytes_read, lance_bytes_written, rows_read, \
     rows_written, work_units_completed, work_units_total";
 
 #[derive(Clone)]
@@ -47,18 +47,19 @@ impl SqliteJobStore {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, StoreError> {
         let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| StoreError::Database(error.to_string()))?;
+        }
         tokio::task::spawn_blocking(move || Self::open_blocking(&path, clock))
             .await
             .map_err(|error| StoreError::Worker(error.to_string()))?
     }
 
     fn open_blocking(path: &Path, clock: Arc<dyn Clock>) -> Result<Self, StoreError> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| StoreError::Database(error.to_string()))?;
-        }
         let connection = Connection::open(path).map_err(database_error)?;
         connection
             .busy_timeout(SQLITE_BUSY_TIMEOUT)
@@ -129,6 +130,7 @@ impl JobStore for SqliteJobStore {
                 creation_timestamp_ms: job.creation_timestamp_ms,
                 update_timestamp_ms: job.creation_timestamp_ms,
                 attempt: INITIAL_ATTEMPT,
+                error_reasons: Vec::new(),
                 lease_expiration_timestamp_ms: None,
                 progress: JobProgress::default(),
             };
@@ -383,6 +385,8 @@ fn get_job(connection: &Connection, id: Uuid) -> Result<Job, StoreError> {
 }
 
 fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
+    let error_reasons = serde_json::from_str::<Vec<JobError>>(&row.get::<_, String>(9)?)
+        .map_err(|error| conversion_error(9, Type::Text, error))?;
     Ok(Job {
         id: parse_uuid(&row.get::<_, String>(0)?, 0)?,
         creator: row.get(1)?,
@@ -393,14 +397,15 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         creation_timestamp_ms: row.get(6)?,
         update_timestamp_ms: row.get(7)?,
         attempt: i64_to_u32(row.get(8)?, 8)?,
-        lease_expiration_timestamp_ms: row.get(9)?,
+        error_reasons,
+        lease_expiration_timestamp_ms: row.get(10)?,
         progress: JobProgress {
-            source_bytes_read: i64_to_u64(row.get(10)?, 10)?,
-            lance_bytes_written: i64_to_u64(row.get(11)?, 11)?,
-            rows_read: i64_to_u64(row.get(12)?, 12)?,
-            rows_written: i64_to_u64(row.get(13)?, 13)?,
-            work_units_completed: i64_to_u64(row.get(14)?, 14)?,
-            work_units_total: i64_to_u64(row.get(15)?, 15)?,
+            source_bytes_read: i64_to_u64(row.get(11)?, 11)?,
+            lance_bytes_written: i64_to_u64(row.get(12)?, 12)?,
+            rows_read: i64_to_u64(row.get(13)?, 13)?,
+            rows_written: i64_to_u64(row.get(14)?, 14)?,
+            work_units_completed: i64_to_u64(row.get(15)?, 15)?,
+            work_units_total: i64_to_u64(row.get(16)?, 16)?,
         },
     })
 }

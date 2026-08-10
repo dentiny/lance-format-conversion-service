@@ -18,7 +18,7 @@ lance-job-store.workspace = true
 lance-job-store-factory.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 uuid.workspace = true
 
 [dev-dependencies]
