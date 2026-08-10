@@ -1,37 +1,45 @@
-[package]
-name = "lance-format-conversion-service"
+[workspace]
+members = [
+    "crates/core",
+    "crates/job-store",
+    "crates/job-store-sqlite",
+    "crates/reconciler",
+    "crates/web",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
-description = "Convert Parquet and Hugging Face datasets to Lance"
 license = "MIT"
+repository = "https://github.com/lancedb/lance-format-conversion-service"
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+[workspace.dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+clap = { version = "4.6.6", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+lance-conversion-core = { path = "crates/core" }
+lance-job-store = { path = "crates/job-store" }
+lance-job-store-sqlite = { path = "crates/job-store-sqlite" }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
+thiserror = { version = "2.0.20", default-features = false }
+tikv-jemallocator = { version = "0.7.0", default-features = false }
+tokio = { version = "1.53.1", default-features = false }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
+uuid = { version = "1.24.0", default-features = false, features = ["v4", "serde"] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 debug = 1
-
-[dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
-clap = { version = "4.6.6", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
-serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
-thiserror = { version = "2.0.20", default-features = false }
-tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt-multi-thread", "signal", "net"] }
-tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
-uuid = { version = "1.24.0", default-features = false, features = ["v4", "serde"] }
-
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { version = "0.7.0", default-features = false }
-
-[dev-dependencies]
-serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
-tower = { version = "0.5.3", default-features = false, features = ["util"] }

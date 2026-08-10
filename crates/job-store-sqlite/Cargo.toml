@@ -1,0 +1,21 @@
+[package]
+name = "lance-job-store-sqlite"
+description = "SQLite implementation of the Lance conversion job store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lance-conversion-core.workspace = true
+lance-job-store.workspace = true
+rusqlite.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
