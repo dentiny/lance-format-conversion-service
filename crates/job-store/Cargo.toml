@@ -11,6 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 lance-conversion-core.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

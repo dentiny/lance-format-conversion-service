@@ -42,9 +42,9 @@ deletion, and orphan cleanup.
 
 ## TODO
 
-- Add a configurable retention policy and reconciliation task for terminal
-  jobs. MVP records are retained indefinitely; cleanup must delete only
-  terminal records older than the configured retention period.
+- Add a reconciliation task that cleans up terminal jobs after configurable
+  age and retained-count thresholds. MVP records are retained indefinitely;
+  running and queuing jobs must never be removed by retention cleanup.
 - Define a retry policy and upper bound for the job attempt counter. MVP only
   requires attempts to remain non-negative.
 - In the final production-hardening milestone, add structured tracing,

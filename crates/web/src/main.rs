@@ -8,7 +8,7 @@ use lance_web::{config::Config, router};
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::parse();
 
-    let store = connect(&config.database_url)?;
+    let store = connect(&config.database_url).await?;
     let listener = tokio::net::TcpListener::bind(config.listen_address).await?;
 
     axum::serve(listener, router(store))

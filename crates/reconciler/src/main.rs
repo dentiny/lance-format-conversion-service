@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::parse();
     config.validate()?;
 
-    let _store = connect(&config.database_url)?;
+    let _store = connect(&config.database_url).await?;
     tokio::signal::ctrl_c().await?;
     Ok(())
 }

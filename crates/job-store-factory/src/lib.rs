@@ -14,12 +14,12 @@ use lance_job_store_sqlite::SqliteJobStore;
 ///
 /// Returns an error when the URL is malformed, the backend is unsupported, or
 /// the selected store cannot be opened.
-pub fn connect(database_url: &str) -> Result<Arc<dyn JobStore>, StoreFactoryError> {
+pub async fn connect(database_url: &str) -> Result<Arc<dyn JobStore>, StoreFactoryError> {
     if let Some(path) = database_url.strip_prefix("sqlite://") {
         if path.is_empty() {
             return Err(StoreFactoryError::InvalidDatabaseUrl);
         }
-        return Ok(Arc::new(SqliteJobStore::open(path)?));
+        return Ok(Arc::new(SqliteJobStore::open(path).await?));
     }
 
     let scheme = database_url

@@ -6,18 +6,21 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use async_trait::async_trait;
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior, params, types::Type,
 };
 use uuid::Uuid;
 
-use lance_conversion_core::{
-    job::{ClaimedJob, Job, JobKind, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate},
-    location::LocationKind,
+use lance_conversion_core::job::{
+    ClaimedJob, Job, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate,
 };
-use lance_job_store::{JobStore, StoreError, StoreFuture};
+use lance_job_store::{JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const PROGRESS_FIELD_COUNT: usize = 6;
+const INITIAL_ATTEMPT: u32 = 0;
 const JOB_COLUMNS: &str = "id, creator, kind, source_uri, destination_uri, \
     status, creation_timestamp_ms, update_timestamp_ms, attempt, lease_expiration_timestamp_ms, \
     source_bytes_read, lance_bytes_written, rows_read, \
@@ -35,21 +38,30 @@ impl SqliteJobStore {
     /// # Errors
     ///
     /// Returns an error when `SQLite` cannot be opened, configured, or migrated.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref();
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with_clock(path, Arc::new(SystemClock)).await
+    }
+
+    async fn open_with_clock(
+        path: impl AsRef<Path>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, StoreError> {
+        let path = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || Self::open_blocking(&path, clock))
+            .await
+            .map_err(|error| StoreError::Worker(error.to_string()))?
+    }
+
+    fn open_blocking(path: &Path, clock: Arc<dyn Clock>) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)
                 .map_err(|error| StoreError::Database(error.to_string()))?;
         }
-        Self::open_with_clock(path, Arc::new(SystemClock))
-    }
-
-    fn open_with_clock(path: impl AsRef<Path>, clock: Arc<dyn Clock>) -> Result<Self, StoreError> {
         let connection = Connection::open(path).map_err(database_error)?;
         connection
-            .busy_timeout(Duration::from_secs(5))
+            .busy_timeout(SQLITE_BUSY_TIMEOUT)
             .map_err(database_error)?;
         connection
             .pragma_update(None, "foreign_keys", true)
@@ -67,22 +79,20 @@ impl SqliteJobStore {
         })
     }
 
-    fn run<T, F>(&self, operation: F) -> StoreFuture<'_, T>
+    async fn run<T, F>(&self, operation: F) -> Result<T, StoreError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
     {
         let connection = Arc::clone(&self.connection);
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                let mut connection = connection
-                    .lock()
-                    .map_err(|error| StoreError::Worker(error.to_string()))?;
-                operation(&mut connection)
-            })
-            .await
-            .map_err(|error| StoreError::Worker(error.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            let mut connection = connection
+                .lock()
+                .map_err(|error| StoreError::Worker(error.to_string()))?;
+            operation(&mut connection)
         })
+        .await
+        .map_err(|error| StoreError::Worker(error.to_string()))?
     }
 }
 
@@ -102,18 +112,26 @@ impl Clock for SystemClock {
     }
 }
 
+#[async_trait]
 impl JobStore for SqliteJobStore {
-    fn create_job(&self, job: NewJob) -> StoreFuture<'_, Job> {
+    async fn create_job(&self, job: NewJob) -> Result<Job, StoreError> {
         self.run(move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(database_error)?;
-            let source = job.source;
-            if job.kind == JobKind::Move && source.kind() == LocationKind::HuggingFace {
-                return Err(StoreError::UnsupportedMoveSource);
-            }
-
-            let id = Uuid::new_v4();
+            let created_job = Job {
+                id: Uuid::new_v4(),
+                creator: job.creator,
+                kind: job.kind,
+                source_uri: job.source.uri().to_owned(),
+                destination_uri: job.destination.uri().to_owned(),
+                status: JobStatus::Queuing,
+                creation_timestamp_ms: job.creation_timestamp_ms,
+                update_timestamp_ms: job.creation_timestamp_ms,
+                attempt: INITIAL_ATTEMPT,
+                lease_expiration_timestamp_ms: None,
+                progress: JobProgress::default(),
+            };
             transaction
                 .execute(
                     "INSERT INTO jobs(
@@ -121,25 +139,26 @@ impl JobStore for SqliteJobStore {
                         creation_timestamp_ms, update_timestamp_ms
                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'queuing', ?6, ?6)",
                     params![
-                        id.to_string(),
-                        job.creator,
-                        job.kind.to_string(),
-                        source.uri(),
-                        job.destination.uri(),
-                        job.creation_timestamp_ms,
+                        created_job.id.to_string(),
+                        created_job.creator,
+                        created_job.kind.to_string(),
+                        created_job.source_uri,
+                        created_job.destination_uri,
+                        created_job.creation_timestamp_ms,
                     ],
                 )
                 .map_err(job_insert_error)?;
             transaction.commit().map_err(database_error)?;
-            get_job(connection, id)
+            Ok(created_job)
         })
+        .await
     }
 
-    fn get_job(&self, id: Uuid) -> StoreFuture<'_, Job> {
-        self.run(move |connection| get_job(connection, id))
+    async fn get_job(&self, id: Uuid) -> Result<Job, StoreError> {
+        self.run(move |connection| get_job(connection, id)).await
     }
 
-    fn list_jobs(&self, limit: usize) -> StoreFuture<'_, Vec<Job>> {
+    async fn list_jobs(&self, limit: usize) -> Result<Vec<Job>, StoreError> {
         self.run(move |connection| {
             if limit == 0 {
                 return Ok(Vec::new());
@@ -153,9 +172,14 @@ impl JobStore for SqliteJobStore {
                 .map_err(database_error)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
         })
+        .await
     }
 
-    fn claim_jobs(&self, limit: usize, lease_duration_ms: i64) -> StoreFuture<'_, Vec<ClaimedJob>> {
+    async fn claim_jobs(
+        &self,
+        limit: usize,
+        lease_duration_ms: i64,
+    ) -> Result<Vec<ClaimedJob>, StoreError> {
         let clock = Arc::clone(&self.clock);
         self.run(move |connection| {
             if limit == 0 || lease_duration_ms <= 0 {
@@ -207,9 +231,10 @@ impl JobStore for SqliteJobStore {
             transaction.commit().map_err(database_error)?;
             Ok(claimed)
         })
+        .await
     }
 
-    fn renew_lease(&self, update: LeaseUpdate) -> StoreFuture<'_, Job> {
+    async fn renew_lease(&self, update: LeaseUpdate) -> Result<Job, StoreError> {
         let clock = Arc::clone(&self.clock);
         self.run(move |connection| {
             if update.lease_duration_ms <= 0 {
@@ -268,9 +293,10 @@ impl JobStore for SqliteJobStore {
             transaction.commit().map_err(database_error)?;
             Ok(job)
         })
+        .await
     }
 
-    fn checkpoint_progress(&self, update: ProgressUpdate) -> StoreFuture<'_, Job> {
+    async fn checkpoint_progress(&self, update: ProgressUpdate) -> Result<Job, StoreError> {
         let clock = Arc::clone(&self.clock);
         self.run(move |connection| {
             let transaction = connection
@@ -319,6 +345,7 @@ impl JobStore for SqliteJobStore {
             transaction.commit().map_err(database_error)?;
             Ok(job)
         })
+        .await
     }
 }
 
@@ -408,7 +435,7 @@ fn usize_to_i64(value: usize) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string()))
 }
 
-fn progress_as_i64(progress: JobProgress) -> Result<[i64; 6], StoreError> {
+fn progress_as_i64(progress: JobProgress) -> Result<[i64; PROGRESS_FIELD_COUNT], StoreError> {
     [
         progress.source_bytes_read,
         progress.lance_bytes_written,
@@ -486,7 +513,9 @@ mod tests {
     #[tokio::test]
     async fn claims_and_reclaims_expired_jobs_with_attempt_fencing() {
         let clock = Arc::new(TestClock::new(10));
-        let store = SqliteJobStore::open_with_clock(":memory:", clock.clone()).unwrap();
+        let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
+            .await
+            .unwrap();
         let job = store
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
@@ -536,7 +565,9 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_updates_progress_snapshot() {
         let clock = Arc::new(TestClock::new(10));
-        let store = SqliteJobStore::open_with_clock(":memory:", clock.clone()).unwrap();
+        let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
+            .await
+            .unwrap();
         let job = store
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
@@ -611,8 +642,12 @@ mod tests {
     async fn concurrent_progress_snapshots_remain_valid() {
         let path = std::env::temp_dir().join(format!("lance-service-{}.db", uuid::Uuid::new_v4()));
         let clock = Arc::new(TestClock::new(10));
-        let first = SqliteJobStore::open_with_clock(&path, clock.clone()).unwrap();
-        let second = SqliteJobStore::open_with_clock(&path, clock.clone()).unwrap();
+        let first = SqliteJobStore::open_with_clock(&path, clock.clone())
+            .await
+            .unwrap();
+        let second = SqliteJobStore::open_with_clock(&path, clock.clone())
+            .await
+            .unwrap();
         let job = first
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
@@ -664,11 +699,11 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
-    #[test]
-    fn migrations_are_idempotent_across_reopen() {
+    #[tokio::test]
+    async fn migrations_are_idempotent_across_reopen() {
         let path = std::env::temp_dir().join(format!("lance-service-{}.db", uuid::Uuid::new_v4()));
-        SqliteJobStore::open(&path).unwrap();
-        SqliteJobStore::open(&path).unwrap();
+        SqliteJobStore::open(&path).await.unwrap();
+        SqliteJobStore::open(&path).await.unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));

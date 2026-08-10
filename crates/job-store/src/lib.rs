@@ -1,39 +1,43 @@
-use std::{future::Future, pin::Pin};
-
+use async_trait::async_trait;
 use thiserror::Error;
 use uuid::Uuid;
 
 use lance_conversion_core::job::{ClaimedJob, Job, LeaseUpdate, NewJob, ProgressUpdate};
 
-pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreError>> + Send + 'a>>;
-
 /// Persists jobs and coordinates lease-based conversion execution.
+#[async_trait]
 pub trait JobStore: Send + Sync {
     /// Creates and returns a job in the queuing state.
-    fn create_job(&self, job: NewJob) -> StoreFuture<'_, Job>;
+    async fn create_job(&self, job: NewJob) -> Result<Job, StoreError>;
 
     /// Returns a job by its unique identifier.
-    fn get_job(&self, id: Uuid) -> StoreFuture<'_, Job>;
+    async fn get_job(&self, id: Uuid) -> Result<Job, StoreError>;
 
-    /// Returns up to `limit` jobs, ordered from newest to oldest.
-    fn list_jobs(&self, limit: usize) -> StoreFuture<'_, Vec<Job>>;
+    /// Returns at most `limit` jobs ordered by creation time from newest to
+    /// oldest, with job ID descending as the deterministic tie-breaker.
+    ///
+    /// A zero limit returns an empty list. This method always starts from the
+    /// newest job and does not provide pagination.
+    async fn list_jobs(&self, limit: usize) -> Result<Vec<Job>, StoreError>;
 
     /// Atomically claims queuing or expired jobs and assigns each a new attempt and lease.
-    fn claim_jobs(&self, limit: usize, lease_duration_ms: i64) -> StoreFuture<'_, Vec<ClaimedJob>>;
+    async fn claim_jobs(
+        &self,
+        limit: usize,
+        lease_duration_ms: i64,
+    ) -> Result<Vec<ClaimedJob>, StoreError>;
 
     /// Extends a current lease and updates its latest progress snapshot.
-    fn renew_lease(&self, update: LeaseUpdate) -> StoreFuture<'_, Job>;
+    async fn renew_lease(&self, update: LeaseUpdate) -> Result<Job, StoreError>;
 
     /// Updates the latest progress snapshot without extending the current lease.
-    fn checkpoint_progress(&self, update: ProgressUpdate) -> StoreFuture<'_, Job>;
+    async fn checkpoint_progress(&self, update: ProgressUpdate) -> Result<Job, StoreError>;
 }
 
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("record not found")]
     NotFound,
-    #[error("move jobs are supported only for NFS and S3 sources")]
-    UnsupportedMoveSource,
     #[error("job lease has expired or belongs to another worker")]
     LeaseLost,
     #[error("invalid store input: {0}")]

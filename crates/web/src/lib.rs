@@ -22,6 +22,8 @@ use lance_conversion_core::{
 };
 use lance_job_store::{JobStore, StoreError};
 
+const DEFAULT_JOB_LIST_LIMIT: usize = 100;
+
 #[derive(Clone)]
 struct AppState {
     store: Arc<dyn JobStore>,
@@ -81,7 +83,7 @@ async fn get_job(
 }
 
 async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<Job>>, ApiError> {
-    Ok(Json(state.store.list_jobs(100).await?))
+    Ok(Json(state.store.list_jobs(DEFAULT_JOB_LIST_LIMIT).await?))
 }
 
 fn now_ms() -> Result<i64, ApiError> {
@@ -113,10 +115,7 @@ impl IntoResponse for ApiError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Store(StoreError::NotFound) => StatusCode::NOT_FOUND,
             Self::Store(
-                StoreError::UnsupportedMoveSource
-                | StoreError::LeaseLost
-                | StoreError::InvalidInput(_)
-                | StoreError::Conflict(_),
+                StoreError::LeaseLost | StoreError::InvalidInput(_) | StoreError::Conflict(_),
             ) => StatusCode::CONFLICT,
             Self::Store(StoreError::Database(_) | StoreError::Worker(_)) | Self::Internal(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -150,7 +149,8 @@ mod tests {
 
     #[tokio::test]
     async fn health_endpoint_is_available() {
-        let response = router(Arc::new(SqliteJobStore::open(":memory:").unwrap()))
+        let store = SqliteJobStore::open(":memory:").await.unwrap();
+        let response = router(Arc::new(store))
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
@@ -164,7 +164,8 @@ mod tests {
 
     #[tokio::test]
     async fn job_submission_accepts_source_uri() {
-        let app = router(Arc::new(SqliteJobStore::open(":memory:").unwrap()));
+        let store = SqliteJobStore::open(":memory:").await.unwrap();
+        let app = router(Arc::new(store));
         let response = app
             .oneshot(
                 Request::builder()
