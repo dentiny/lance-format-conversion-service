@@ -19,12 +19,21 @@ use lance_job_store::{JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const PROGRESS_FIELD_COUNT: usize = 6;
 const INITIAL_ATTEMPT: u32 = 0;
 const JOB_COLUMNS: &str = "id, creator, kind, source_uri, destination_uri, \
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json, \
     lease_expiration_timestamp_ms, source_bytes_read, lance_bytes_written, rows_read, \
-    rows_written, work_units_completed, work_units_total";
+    rows_written, rows_total, work_units_completed, work_units_total";
+
+struct SqlProgress {
+    source_bytes_read: i64,
+    lance_bytes_written: i64,
+    rows_read: i64,
+    rows_written: i64,
+    rows_total: i64,
+    work_units_completed: i64,
+    work_units_total: i64,
+}
 
 #[derive(Clone)]
 pub struct SqliteJobStore {
@@ -268,8 +277,9 @@ impl JobStore for SqliteJobStore {
                          lance_bytes_written = ?6,
                          rows_read = ?7,
                          rows_written = ?8,
-                         work_units_completed = ?9,
-                         work_units_total = ?10
+                         rows_total = ?9,
+                         work_units_completed = ?10,
+                         work_units_total = ?11
                      WHERE id = ?1
                        AND status = 'running'
                        AND attempt = ?2
@@ -279,12 +289,13 @@ impl JobStore for SqliteJobStore {
                         i64::from(update.attempt),
                         lease_expiration_timestamp_ms,
                         now_ms,
-                        progress[0],
-                        progress[1],
-                        progress[2],
-                        progress[3],
-                        progress[4],
-                        progress[5],
+                        progress.source_bytes_read,
+                        progress.lance_bytes_written,
+                        progress.rows_read,
+                        progress.rows_written,
+                        progress.rows_total,
+                        progress.work_units_completed,
+                        progress.work_units_total,
                     ],
                 )
                 .map_err(database_error)?;
@@ -321,8 +332,9 @@ impl JobStore for SqliteJobStore {
                          lance_bytes_written = ?5,
                          rows_read = ?6,
                          rows_written = ?7,
-                         work_units_completed = ?8,
-                         work_units_total = ?9
+                         rows_total = ?8,
+                         work_units_completed = ?9,
+                         work_units_total = ?10
                      WHERE id = ?1
                        AND status = 'running'
                        AND attempt = ?2
@@ -331,12 +343,13 @@ impl JobStore for SqliteJobStore {
                         update.job_id.to_string(),
                         i64::from(update.attempt),
                         now_ms,
-                        progress[0],
-                        progress[1],
-                        progress[2],
-                        progress[3],
-                        progress[4],
-                        progress[5],
+                        progress.source_bytes_read,
+                        progress.lance_bytes_written,
+                        progress.rows_read,
+                        progress.rows_written,
+                        progress.rows_total,
+                        progress.work_units_completed,
+                        progress.work_units_total,
                     ],
                 )
                 .map_err(database_error)?;
@@ -372,6 +385,13 @@ fn validate_progress_update(
             "completed work units exceed total work units".to_owned(),
         ));
     }
+    if incoming.rows_total > 0
+        && (incoming.rows_read > incoming.rows_total || incoming.rows_written > incoming.rows_total)
+    {
+        return Err(StoreError::InvalidInput(
+            "read or written rows exceed total rows".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -404,8 +424,9 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
             lance_bytes_written: i64_to_u64(row.get(12)?, 12)?,
             rows_read: i64_to_u64(row.get(13)?, 13)?,
             rows_written: i64_to_u64(row.get(14)?, 14)?,
-            work_units_completed: i64_to_u64(row.get(15)?, 15)?,
-            work_units_total: i64_to_u64(row.get(16)?, 16)?,
+            rows_total: i64_to_u64(row.get(15)?, 15)?,
+            work_units_completed: i64_to_u64(row.get(16)?, 16)?,
+            work_units_total: i64_to_u64(row.get(17)?, 17)?,
         },
     })
 }
@@ -440,20 +461,20 @@ fn usize_to_i64(value: usize) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string()))
 }
 
-fn progress_as_i64(progress: JobProgress) -> Result<[i64; PROGRESS_FIELD_COUNT], StoreError> {
-    [
-        progress.source_bytes_read,
-        progress.lance_bytes_written,
-        progress.rows_read,
-        progress.rows_written,
-        progress.work_units_completed,
-        progress.work_units_total,
-    ]
-    .map(|value| i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string())))
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()?
-    .try_into()
-    .map_err(|_| StoreError::Worker("invalid progress field count".to_owned()))
+fn progress_as_i64(progress: JobProgress) -> Result<SqlProgress, StoreError> {
+    Ok(SqlProgress {
+        source_bytes_read: u64_as_i64(progress.source_bytes_read)?,
+        lance_bytes_written: u64_as_i64(progress.lance_bytes_written)?,
+        rows_read: u64_as_i64(progress.rows_read)?,
+        rows_written: u64_as_i64(progress.rows_written)?,
+        rows_total: u64_as_i64(progress.rows_total)?,
+        work_units_completed: u64_as_i64(progress.work_units_completed)?,
+        work_units_total: u64_as_i64(progress.work_units_total)?,
+    })
+}
+
+fn u64_as_i64(value: u64) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string()))
 }
 
 fn conversion_error(
@@ -591,6 +612,7 @@ mod tests {
             lance_bytes_written: 80,
             rows_read: 10,
             rows_written: 10,
+            rows_total: 20,
             work_units_completed: 1,
             work_units_total: 2,
         };

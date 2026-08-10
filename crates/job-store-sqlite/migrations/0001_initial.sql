@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     lance_bytes_written INTEGER NOT NULL DEFAULT 0 CHECK (lance_bytes_written >= 0),
     rows_read INTEGER NOT NULL DEFAULT 0 CHECK (rows_read >= 0),
     rows_written INTEGER NOT NULL DEFAULT 0 CHECK (rows_written >= 0),
+    rows_total INTEGER NOT NULL DEFAULT 0 CHECK (rows_total >= 0),
     work_units_completed INTEGER NOT NULL DEFAULT 0 CHECK (work_units_completed >= 0),
     work_units_total INTEGER NOT NULL DEFAULT 0 CHECK (work_units_total >= 0),
 
@@ -39,6 +40,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     CHECK (
         (status = 'running' AND lease_expiration_timestamp_ms IS NOT NULL)
         OR status != 'running'
+    ),
+    CHECK (
+        rows_total = 0
+        OR (rows_read <= rows_total AND rows_written <= rows_total)
     ),
     CHECK (work_units_total = 0 OR work_units_completed <= work_units_total)
 ) STRICT;
