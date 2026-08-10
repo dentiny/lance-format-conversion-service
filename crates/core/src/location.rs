@@ -41,28 +41,15 @@ pub struct DatasetLocation {
 }
 
 impl DatasetLocation {
-    /// Parses an NFS-mounted path, S3 URI, or Hugging Face source URI.
+    /// Parses an NFS-mounted path, S3 URI, or Hugging Face dataset URI.
     ///
     /// # Errors
     ///
     /// Returns an error when an explicit scheme is unsupported.
-    pub fn parse_source(uri: impl Into<String>) -> Result<Self, LocationError> {
+    pub fn parse_location(uri: impl Into<String>) -> Result<Self, LocationError> {
         let uri = uri.into();
         let kind = parse_kind(&uri)?;
         Ok(Self { uri, kind })
-    }
-
-    /// Parses an S3 destination URI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the location does not identify S3.
-    pub fn parse_destination(uri: impl Into<String>) -> Result<Self, LocationError> {
-        let location = Self::parse_source(uri)?;
-        if location.kind != LocationKind::S3 {
-            return Err(LocationError::DestinationMustBeS3);
-        }
-        Ok(location)
     }
 
     #[must_use]
@@ -80,8 +67,6 @@ impl DatasetLocation {
 pub enum LocationError {
     #[error("unsupported dataset location scheme: {0}")]
     UnsupportedScheme(String),
-    #[error("Lance destinations must use S3")]
-    DestinationMustBeS3,
 }
 
 fn parse_kind(uri: &str) -> Result<LocationKind, LocationError> {
@@ -101,21 +86,21 @@ mod tests {
     use super::{DatasetLocation, LocationError, LocationKind};
 
     #[test]
-    fn accepts_supported_sources() {
+    fn accepts_supported_locations() {
         assert_eq!(
-            DatasetLocation::parse_source("/datasets/images")
+            DatasetLocation::parse_location("/datasets/images")
                 .unwrap()
                 .kind(),
             LocationKind::Nfs
         );
         assert_eq!(
-            DatasetLocation::parse_source("s3://example-bucket/datasets/images")
+            DatasetLocation::parse_location("s3://example-bucket/datasets/images")
                 .unwrap()
                 .kind(),
             LocationKind::S3
         );
         assert_eq!(
-            DatasetLocation::parse_source(
+            DatasetLocation::parse_location(
                 "hf://datasets/owner/name@main?config=default&split=train"
             )
             .unwrap()
@@ -125,17 +110,9 @@ mod tests {
     }
 
     #[test]
-    fn destination_is_s3_only() {
-        assert_eq!(
-            DatasetLocation::parse_destination("/datasets/output").unwrap_err(),
-            LocationError::DestinationMustBeS3
-        );
-    }
-
-    #[test]
     fn rejects_unknown_schemes() {
         assert_eq!(
-            DatasetLocation::parse_source("gs://bucket/key").unwrap_err(),
+            DatasetLocation::parse_location("gs://bucket/key").unwrap_err(),
             LocationError::UnsupportedScheme("gs".to_owned())
         );
     }

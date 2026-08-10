@@ -13,12 +13,11 @@ The foundational control plane currently includes:
 
 - Rust 1.97.1 pinned in `rust-toolchain.toml`
 - Axum health and job API in `lance-web`
-- Typed NFS, S3, and Hugging Face source-location grammar
-- S3-only destination validation
+- Typed NFS, S3, and Hugging Face location classification
 - `copy` and `move` job contracts
 - Object-safe `JobStore` interface
 - SQLite implementation with an embedded schema, WAL, and busy timeout
-- Atomic lease claims, 15-minute lease representation, attempt-based fencing, and monotonic progress checkpoints
+- Atomic lease claims, 15-minute lease representation, attempt-based fencing, and progress snapshots
 - Active destination reservation
 - a separate `lance-reconciler` process, which initializes storage but does not
   claim work
@@ -125,6 +124,7 @@ Example job request:
 curl -X POST http://127.0.0.1:8080/v1/jobs \
   -H 'content-type: application/json' \
   -d '{
+    "creator":"test-user",
     "source_uri":"s3://source-bucket/datasets/images",
     "kind":"copy",
     "destination_uri":"s3://destination-bucket/datasets/images.lance"

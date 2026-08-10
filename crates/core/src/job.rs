@@ -40,7 +40,7 @@ string_enum!(JobKind {
 });
 
 string_enum!(JobStatus {
-    Queued => "queued",
+    Queuing => "queuing",
     Running => "running",
     Succeeded => "succeeded",
     Failed => "failed",
@@ -49,11 +49,12 @@ string_enum!(JobStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
     pub id: Uuid,
+    pub creator: String,
     pub kind: JobKind,
     pub source_uri: String,
     pub destination_uri: String,
     pub status: JobStatus,
-    pub submission_timestamp_ms: i64,
+    pub creation_timestamp_ms: i64,
     pub update_timestamp_ms: i64,
     pub attempt: u32,
     pub lease_expiration_timestamp_ms: Option<i64>,
@@ -62,10 +63,11 @@ pub struct Job {
 
 #[derive(Debug, Clone)]
 pub struct NewJob {
+    pub creator: String,
     pub source: DatasetLocation,
     pub kind: JobKind,
     pub destination: DatasetLocation,
-    pub submission_timestamp_ms: i64,
+    pub creation_timestamp_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

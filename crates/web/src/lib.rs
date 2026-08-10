@@ -46,6 +46,7 @@ async fn health() -> Json<Health> {
 
 #[derive(Debug, Deserialize)]
 struct CreateJobRequest {
+    creator: String,
     source_uri: String,
     kind: JobKind,
     destination_uri: String,
@@ -55,17 +56,18 @@ async fn create_job(
     State(state): State<AppState>,
     Json(request): Json<CreateJobRequest>,
 ) -> Result<(StatusCode, Json<Job>), ApiError> {
-    let source = DatasetLocation::parse_source(request.source_uri)
+    let source = DatasetLocation::parse_location(request.source_uri)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-    let destination = DatasetLocation::parse_destination(request.destination_uri)
+    let destination = DatasetLocation::parse_location(request.destination_uri)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let job = state
         .store
         .create_job(NewJob {
+            creator: request.creator,
             source,
             kind: request.kind,
             destination,
-            submission_timestamp_ms: now_ms()?,
+            creation_timestamp_ms: now_ms()?,
         })
         .await?;
     Ok((StatusCode::ACCEPTED, Json(job)))
@@ -170,7 +172,7 @@ mod tests {
                     .uri("/v1/jobs")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"source_uri":"s3://source-bucket/data","kind":"copy","destination_uri":"s3://destination-bucket/data.lance"}"#,
+                        r#"{"creator":"test-user","source_uri":"s3://source-bucket/data","kind":"copy","destination_uri":"s3://destination-bucket/data.lance"}"#,
                     ))
                     .unwrap(),
             )
@@ -180,6 +182,7 @@ mod tests {
         let job: Job =
             serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
                 .unwrap();
+        assert_eq!(job.creator, "test-user");
         assert_eq!(job.source_uri, "s3://source-bucket/data");
     }
 

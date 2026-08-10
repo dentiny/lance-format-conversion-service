@@ -9,7 +9,7 @@ pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreError>>
 
 /// Persists jobs and coordinates lease-based conversion execution.
 pub trait JobStore: Send + Sync {
-    /// Creates and returns a queued job.
+    /// Creates and returns a job in the queuing state.
     fn create_job(&self, job: NewJob) -> StoreFuture<'_, Job>;
 
     /// Returns a job by its unique identifier.
@@ -18,13 +18,13 @@ pub trait JobStore: Send + Sync {
     /// Returns up to `limit` jobs, ordered from newest to oldest.
     fn list_jobs(&self, limit: usize) -> StoreFuture<'_, Vec<Job>>;
 
-    /// Atomically claims queued or expired jobs and assigns each a new attempt and lease.
+    /// Atomically claims queuing or expired jobs and assigns each a new attempt and lease.
     fn claim_jobs(&self, limit: usize, lease_duration_ms: i64) -> StoreFuture<'_, Vec<ClaimedJob>>;
 
-    /// Extends a current lease and persists monotonic progress for its attempt.
+    /// Extends a current lease and updates its latest progress snapshot.
     fn renew_lease(&self, update: LeaseUpdate) -> StoreFuture<'_, Job>;
 
-    /// Persists monotonic progress without extending the current lease.
+    /// Updates the latest progress snapshot without extending the current lease.
     fn checkpoint_progress(&self, update: ProgressUpdate) -> StoreFuture<'_, Job>;
 }
 
