@@ -22,7 +22,6 @@ The foundational control plane currently includes:
 - Active destination reservation
 - a separate `lance-reconciler` process, which initializes storage but does not
   claim work
-- jemalloc in both deployable binaries on supported targets
 
 Stateless dataset schema validation and conversion execution begin in Milestone
 1. The reconciler explicitly does not claim jobs until Milestone 1 provides a
@@ -30,8 +29,9 @@ conversion handler.
 
 ## Workspace architecture
 
-- `crates/core`: domain models and dataset location parsing/validation
+- `crates/core`: job models and dataset location classification
 - `crates/job-store`: object-safe `JobStore` interface and storage errors
+- `crates/job-store-factory`: database URL dispatch and backend construction
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
 - `crates/web`: `lance-web`, the HTTP job control plane
 - `crates/reconciler`: `lance-reconciler`, the future conversion control loop
@@ -48,6 +48,8 @@ deletion, and orphan cleanup.
   terminal records older than the configured retention period.
 - Define a retry policy and upper bound for the job attempt counter. MVP only
   requires attempts to remain non-negative.
+- In the final production-hardening milestone, add structured tracing,
+  `jemalloc`, and request-triggered CPU and memory profiling.
 
 SQLite development deployments must run web and reconciler in the same pod or
 on the same host, backed by one shared local volume containing the database.
@@ -65,8 +67,9 @@ cargo tree --duplicates
 ```
 
 The dependency set intentionally excludes Lance, Arrow, Parquet, S3, Leptos,
-and profiling crates until the milestones that use them. Runtime dependencies
-disable default features and opt into only required capabilities.
+tracing, `jemalloc`, and profiling crates until the milestones that use them.
+Runtime dependencies disable default features and opt into only required
+capabilities.
 
 ## Run
 
@@ -75,14 +78,14 @@ Run the web control plane:
 ```shell
 cargo run -p lance-web -- \
   --listen-address 127.0.0.1:8080 \
-  --database-path ./data/service.db
+  --database-url sqlite://./data/service.db
 ```
 
 Run the Milestone 0 reconciler:
 
 ```shell
 cargo run -p lance-reconciler -- \
-  --database-path ./data/service.db \
+  --database-url sqlite://./data/service.db \
   --worker-count 256 \
   --poll-interval-ms 1000 \
   --lease-duration-secs 900 \
@@ -94,8 +97,7 @@ cargo run -p lance-reconciler -- \
 
 Runtime service configuration uses command-line flags. Credentials must not be
 passed as flags because process arguments are observable. The reconciler opens
-and migrates SQLite, logs that execution begins in Milestone 1, and waits for
-Ctrl-C without claiming jobs.
+the selected job-store backend and waits for Ctrl-C without claiming jobs.
 
 Milestone 1 will map these defaults to Lance `WriteParams::max_bytes_per_file`
 and Blob V2 field metadata. The 512 MiB file target is a soft limit: a file may
@@ -103,7 +105,7 @@ exceed it by the final write batch and footer.
 
 ## Location grammar
 
-- NFS source: `nfs:///absolute/path`
+- NFS-mounted source: any scheme-less filesystem path
 - S3 source or destination: `s3://bucket/non-empty-prefix`
 - Hugging Face source: `hf://datasets/owner/name@revision?config=name&split=train`
 

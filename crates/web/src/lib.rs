@@ -17,7 +17,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use lance_conversion_core::{
-    domain::{Job, JobKind, NewJob},
+    job::{Job, JobKind, NewJob},
     location::DatasetLocation,
 };
 use lance_job_store::{JobStore, StoreError};
@@ -65,7 +65,7 @@ async fn create_job(
             source,
             kind: request.kind,
             destination,
-            submitted_at_ms: now_ms()?,
+            submission_timestamp_ms: now_ms()?,
         })
         .await?;
     Ok((StatusCode::ACCEPTED, Json(job)))
@@ -121,7 +121,6 @@ impl IntoResponse for ApiError {
             }
         };
         let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
-            tracing::error!(error = %self, "request failed");
             "internal server error".to_owned()
         } else {
             self.to_string()
@@ -141,7 +140,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use lance_conversion_core::domain::Job;
+    use lance_conversion_core::job::Job;
     use lance_job_store::StoreError;
     use lance_job_store_sqlite::SqliteJobStore;
 

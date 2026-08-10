@@ -3,26 +3,28 @@ use std::{future::Future, pin::Pin};
 use thiserror::Error;
 use uuid::Uuid;
 
-use lance_conversion_core::domain::{ClaimedJob, Job, LeaseUpdate, NewJob, ProgressUpdate};
+use lance_conversion_core::job::{ClaimedJob, Job, LeaseUpdate, NewJob, ProgressUpdate};
 
 pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreError>> + Send + 'a>>;
 
+/// Persists jobs and coordinates lease-based conversion execution.
 pub trait JobStore: Send + Sync {
+    /// Creates and returns a queued job.
     fn create_job(&self, job: NewJob) -> StoreFuture<'_, Job>;
 
+    /// Returns a job by its unique identifier.
     fn get_job(&self, id: Uuid) -> StoreFuture<'_, Job>;
 
+    /// Returns up to `limit` jobs, ordered from newest to oldest.
     fn list_jobs(&self, limit: usize) -> StoreFuture<'_, Vec<Job>>;
 
-    fn claim_jobs(
-        &self,
-        owner: String,
-        limit: usize,
-        lease_duration_ms: i64,
-    ) -> StoreFuture<'_, Vec<ClaimedJob>>;
+    /// Atomically claims queued or expired jobs and assigns each a new attempt and lease.
+    fn claim_jobs(&self, limit: usize, lease_duration_ms: i64) -> StoreFuture<'_, Vec<ClaimedJob>>;
 
+    /// Extends a current lease and persists monotonic progress for its attempt.
     fn renew_lease(&self, update: LeaseUpdate) -> StoreFuture<'_, Job>;
 
+    /// Persists monotonic progress without extending the current lease.
     fn checkpoint_progress(&self, update: ProgressUpdate) -> StoreFuture<'_, Job>;
 }
 

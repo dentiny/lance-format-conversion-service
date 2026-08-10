@@ -53,11 +53,10 @@ pub struct Job {
     pub source_uri: String,
     pub destination_uri: String,
     pub status: JobStatus,
-    pub submitted_at_ms: i64,
-    pub update_timestamp: i64,
+    pub submission_timestamp_ms: i64,
+    pub update_timestamp_ms: i64,
     pub attempt: u32,
-    pub lease_owner: Option<String>,
-    pub lease_expiration_timestamp: Option<i64>,
+    pub lease_expiration_timestamp_ms: Option<i64>,
     pub progress: JobProgress,
 }
 
@@ -66,7 +65,7 @@ pub struct NewJob {
     pub source: DatasetLocation,
     pub kind: JobKind,
     pub destination: DatasetLocation,
-    pub submitted_at_ms: i64,
+    pub submission_timestamp_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

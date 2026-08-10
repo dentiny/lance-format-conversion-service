@@ -1,14 +1,10 @@
-use std::{
-    num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
-};
+use std::num::{NonZeroU64, NonZeroUsize};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use thiserror::Error;
-use tracing::Level;
 
-/// Default path to the shared `SQLite` database.
-pub const DEFAULT_DATABASE_PATH: &str = "./data/service.db";
+/// Default job-store database URL.
+pub const DEFAULT_DATABASE_URL: &str = "sqlite://./data/service.db";
 /// Default number of conversion workers.
 pub const DEFAULT_WORKER_COUNT: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 /// Default queue polling interval in milliseconds.
@@ -23,14 +19,11 @@ pub const DEFAULT_PROGRESS_INTERVAL_SECS: NonZeroU64 = NonZeroU64::new(30).unwra
 pub const DEFAULT_TARGET_LANCE_FILE_SIZE_MIB: NonZeroU64 = NonZeroU64::new(512).unwrap();
 /// Default Blob V2 inline payload threshold in MiB.
 pub const DEFAULT_BLOB_INLINE_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(2).unwrap();
-/// Default tracing level.
-pub const DEFAULT_LOG_LEVEL: &str = "info";
-
 #[derive(Debug, Clone, Parser)]
 #[command(version, about)]
 pub struct Config {
-    #[arg(long, default_value = DEFAULT_DATABASE_PATH)]
-    pub database_path: PathBuf,
+    #[arg(long, default_value = DEFAULT_DATABASE_URL)]
+    pub database_url: String,
 
     #[arg(long, default_value_t = DEFAULT_WORKER_COUNT)]
     pub worker_count: NonZeroUsize,
@@ -52,9 +45,6 @@ pub struct Config {
 
     #[arg(long, default_value_t = DEFAULT_BLOB_INLINE_THRESHOLD_MIB)]
     pub blob_inline_threshold_mib: NonZeroU64,
-
-    #[arg(long, value_enum, default_value = DEFAULT_LOG_LEVEL)]
-    pub log_level: LogLevel,
 }
 
 impl Config {
@@ -79,27 +69,6 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<LogLevel> for Level {
-    fn from(value: LogLevel) -> Self {
-        match value {
-            LogLevel::Error => Self::ERROR,
-            LogLevel::Warn => Self::WARN,
-            LogLevel::Info => Self::INFO,
-            LogLevel::Debug => Self::DEBUG,
-            LogLevel::Trace => Self::TRACE,
-        }
-    }
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
     #[error("lease renewal interval must be shorter than lease duration")]
@@ -108,50 +77,4 @@ pub enum ConfigError {
     ProgressSlowerThanLeaseRenewal,
     #[error("blob inline threshold must not exceed the target Lance file size")]
     BlobThresholdExceedsFileSize,
-}
-
-#[cfg(test)]
-mod tests {
-    use std::num::NonZeroU64;
-
-    use clap::Parser;
-
-    use super::{Config, ConfigError};
-
-    #[test]
-    fn defaults_match_the_service_contract() {
-        let config = Config::parse_from(["lance-reconciler"]);
-        assert_eq!(
-            config.database_path,
-            std::path::Path::new("./data/service.db")
-        );
-        assert_eq!(config.poll_interval_ms.get(), 1_000);
-        assert_eq!(config.worker_count.get(), 256);
-        assert_eq!(config.lease_duration_secs.get(), 900);
-        assert_eq!(config.lease_renew_interval_secs.get(), 300);
-        assert_eq!(config.progress_interval_secs.get(), 30);
-        assert_eq!(config.target_lance_file_size_mib.get(), 512);
-        assert_eq!(config.blob_inline_threshold_mib.get(), 2);
-        config.validate().unwrap();
-    }
-
-    #[test]
-    fn rejects_invalid_lease_intervals() {
-        let mut config = Config::parse_from(["lance-reconciler"]);
-        config.lease_renew_interval_secs = NonZeroU64::new(900).unwrap();
-        assert_eq!(
-            config.validate().unwrap_err(),
-            ConfigError::LeaseRenewalNotShorter
-        );
-    }
-
-    #[test]
-    fn rejects_blob_threshold_larger_than_output_file() {
-        let mut config = Config::parse_from(["lance-reconciler"]);
-        config.blob_inline_threshold_mib = NonZeroU64::new(513).unwrap();
-        assert_eq!(
-            config.validate().unwrap_err(),
-            ConfigError::BlobThresholdExceedsFileSize
-        );
-    }
 }

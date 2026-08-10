@@ -12,17 +12,15 @@ use rusqlite::{
 use uuid::Uuid;
 
 use lance_conversion_core::{
-    domain::{
-        ClaimedJob, Job, JobKind, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate,
-    },
-    location::{DatasetLocation, LocationKind},
+    job::{ClaimedJob, Job, JobKind, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate},
+    location::LocationKind,
 };
 use lance_job_store::{JobStore, StoreError, StoreFuture};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const JOB_COLUMNS: &str = "id, kind, source_uri, destination_uri, \
-    status, submitted_at_ms, update_timestamp, attempt, lease_owner, \
-    lease_expiration_timestamp, source_bytes_read, lance_bytes_written, rows_read, \
+    status, submission_timestamp_ms, update_timestamp_ms, attempt, lease_expiration_timestamp_ms, \
+    source_bytes_read, lance_bytes_written, rows_read, \
     rows_written, work_units_completed, work_units_total";
 
 #[derive(Clone)]
@@ -38,6 +36,13 @@ impl SqliteJobStore {
     ///
     /// Returns an error when `SQLite` cannot be opened, configured, or migrated.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| StoreError::Database(error.to_string()))?;
+        }
         Self::open_with_clock(path, Arc::new(SystemClock))
     }
 
@@ -107,61 +112,20 @@ impl JobStore for SqliteJobStore {
             if job.kind == JobKind::Move && source.kind() == LocationKind::HuggingFace {
                 return Err(StoreError::UnsupportedMoveSource);
             }
-            if source.overlaps(&job.destination) {
-                return Err(StoreError::InvalidInput(
-                    "source and destination prefixes must not overlap".to_owned(),
-                ));
-            }
-            let active_jobs = {
-                let mut statement = transaction
-                    .prepare(
-                        "SELECT source_uri, destination_uri, kind FROM jobs
-                         WHERE status IN ('queued', 'running')",
-                    )
-                    .map_err(database_error)?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
-                    .map_err(database_error)?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(database_error)?
-            };
-            for (active_source_uri, active_destination_uri, active_kind) in active_jobs {
-                let active_source = DatasetLocation::parse_source(active_source_uri)
-                    .map_err(|error| StoreError::Database(error.to_string()))?;
-                let active_destination = DatasetLocation::parse_destination(active_destination_uri)
-                    .map_err(|error| StoreError::Database(error.to_string()))?;
-                let active_kind = JobKind::from_str(&active_kind).map_err(StoreError::Database)?;
-                let paths_conflict = job.destination.overlaps(&active_destination)
-                    || job.destination.overlaps(&active_source)
-                    || source.overlaps(&active_destination)
-                    || ((job.kind == JobKind::Move || active_kind == JobKind::Move)
-                        && source.overlaps(&active_source));
-                if paths_conflict {
-                    return Err(StoreError::Conflict(
-                        "source or destination overlaps an active job".to_owned(),
-                    ));
-                }
-            }
 
             let id = Uuid::new_v4();
             transaction
                 .execute(
                     "INSERT INTO jobs(
                         id, kind, source_uri, destination_uri, status,
-                        submitted_at_ms, update_timestamp
+                        submission_timestamp_ms, update_timestamp_ms
                     ) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?5)",
                     params![
                         id.to_string(),
                         job.kind.to_string(),
                         source.uri(),
                         job.destination.uri(),
-                        job.submitted_at_ms,
+                        job.submission_timestamp_ms,
                     ],
                 )
                 .map_err(job_insert_error)?;
@@ -180,7 +144,7 @@ impl JobStore for SqliteJobStore {
                 return Ok(Vec::new());
             }
             let sql = format!(
-                "SELECT {JOB_COLUMNS} FROM jobs ORDER BY submitted_at_ms DESC, id DESC LIMIT ?1"
+                "SELECT {JOB_COLUMNS} FROM jobs ORDER BY submission_timestamp_ms DESC, id DESC LIMIT ?1"
             );
             let mut statement = connection.prepare(&sql).map_err(database_error)?;
             let rows = statement
@@ -190,19 +154,9 @@ impl JobStore for SqliteJobStore {
         })
     }
 
-    fn claim_jobs(
-        &self,
-        owner: String,
-        limit: usize,
-        lease_duration_ms: i64,
-    ) -> StoreFuture<'_, Vec<ClaimedJob>> {
+    fn claim_jobs(&self, limit: usize, lease_duration_ms: i64) -> StoreFuture<'_, Vec<ClaimedJob>> {
         let clock = Arc::clone(&self.clock);
         self.run(move |connection| {
-            if owner.trim().is_empty() {
-                return Err(StoreError::InvalidInput(
-                    "lease owner cannot be empty".to_owned(),
-                ));
-            }
             if limit == 0 || lease_duration_ms <= 0 {
                 return Ok(Vec::new());
             }
@@ -210,7 +164,7 @@ impl JobStore for SqliteJobStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(database_error)?;
             let now_ms = clock.now_ms()?;
-            let lease_expiration_timestamp = now_ms
+            let lease_expiration_timestamp_ms = now_ms
                 .checked_add(lease_duration_ms)
                 .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
             let ids = {
@@ -218,8 +172,8 @@ impl JobStore for SqliteJobStore {
                     .prepare(
                         "SELECT id FROM jobs
                          WHERE status = 'queued'
-                            OR (status = 'running' AND lease_expiration_timestamp <= ?1)
-                         ORDER BY submitted_at_ms, id
+                            OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
+                         ORDER BY submission_timestamp_ms, id
                          LIMIT ?2",
                     )
                     .map_err(database_error)?;
@@ -238,12 +192,11 @@ impl JobStore for SqliteJobStore {
                     .execute(
                         "UPDATE jobs
                          SET status = 'running',
-                             lease_owner = ?2,
-                             lease_expiration_timestamp = ?3,
+                             lease_expiration_timestamp_ms = ?2,
                              attempt = attempt + 1,
-                             update_timestamp = ?4
+                             update_timestamp_ms = ?3
                          WHERE id = ?1",
-                        params![id, owner, lease_expiration_timestamp, now_ms,],
+                        params![id, lease_expiration_timestamp_ms, now_ms],
                     )
                     .map_err(database_error)?;
                 let job_id = parse_uuid(&id, 0).map_err(database_error)?;
@@ -274,15 +227,15 @@ impl JobStore for SqliteJobStore {
                 now_ms,
                 update.progress,
             )?;
-            let lease_expiration_timestamp = now_ms
+            let lease_expiration_timestamp_ms = now_ms
                 .checked_add(update.lease_duration_ms)
                 .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
             let progress = progress_as_i64(update.progress)?;
             let changed = transaction
                 .execute(
                     "UPDATE jobs
-                     SET lease_expiration_timestamp = ?3,
-                         update_timestamp = ?4,
+                     SET lease_expiration_timestamp_ms = ?3,
+                         update_timestamp_ms = ?4,
                          source_bytes_read = MAX(source_bytes_read, ?5),
                          lance_bytes_written = MAX(lance_bytes_written, ?6),
                          rows_read = MAX(rows_read, ?7),
@@ -292,11 +245,11 @@ impl JobStore for SqliteJobStore {
                      WHERE id = ?1
                        AND status = 'running'
                        AND attempt = ?2
-                       AND lease_expiration_timestamp > ?4",
+                       AND lease_expiration_timestamp_ms > ?4",
                     params![
                         update.job_id.to_string(),
                         i64::from(update.attempt),
-                        lease_expiration_timestamp,
+                        lease_expiration_timestamp_ms,
                         now_ms,
                         progress[0],
                         progress[1],
@@ -334,7 +287,7 @@ impl JobStore for SqliteJobStore {
             let changed = transaction
                 .execute(
                     "UPDATE jobs
-                     SET update_timestamp = ?3,
+                     SET update_timestamp_ms = ?3,
                          source_bytes_read = MAX(source_bytes_read, ?4),
                          lance_bytes_written = MAX(lance_bytes_written, ?5),
                          rows_read = MAX(rows_read, ?6),
@@ -344,7 +297,7 @@ impl JobStore for SqliteJobStore {
                      WHERE id = ?1
                        AND status = 'running'
                        AND attempt = ?2
-                       AND lease_expiration_timestamp > ?3",
+                       AND lease_expiration_timestamp_ms > ?3",
                     params![
                         update.job_id.to_string(),
                         i64::from(update.attempt),
@@ -379,7 +332,7 @@ fn validate_progress_update(
     if job.status != JobStatus::Running
         || job.attempt != attempt
         || job
-            .lease_expiration_timestamp
+            .lease_expiration_timestamp_ms
             .is_none_or(|expiry| expiry <= now_ms)
     {
         return Err(StoreError::LeaseLost);
@@ -413,18 +366,17 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         source_uri: row.get(2)?,
         destination_uri: row.get(3)?,
         status: parse_value(&row.get::<_, String>(4)?, 4)?,
-        submitted_at_ms: row.get(5)?,
-        update_timestamp: row.get(6)?,
+        submission_timestamp_ms: row.get(5)?,
+        update_timestamp_ms: row.get(6)?,
         attempt: i64_to_u32(row.get(7)?, 7)?,
-        lease_owner: row.get(8)?,
-        lease_expiration_timestamp: row.get(9)?,
+        lease_expiration_timestamp_ms: row.get(8)?,
         progress: JobProgress {
-            source_bytes_read: i64_to_u64(row.get(10)?, 10)?,
-            lance_bytes_written: i64_to_u64(row.get(11)?, 11)?,
-            rows_read: i64_to_u64(row.get(12)?, 12)?,
-            rows_written: i64_to_u64(row.get(13)?, 13)?,
-            work_units_completed: i64_to_u64(row.get(14)?, 14)?,
-            work_units_total: i64_to_u64(row.get(15)?, 15)?,
+            source_bytes_read: i64_to_u64(row.get(9)?, 9)?,
+            lance_bytes_written: i64_to_u64(row.get(10)?, 10)?,
+            rows_read: i64_to_u64(row.get(11)?, 11)?,
+            rows_written: i64_to_u64(row.get(12)?, 12)?,
+            work_units_completed: i64_to_u64(row.get(13)?, 13)?,
+            work_units_total: i64_to_u64(row.get(14)?, 14)?,
         },
     })
 }
@@ -505,7 +457,7 @@ mod tests {
     };
 
     use lance_conversion_core::{
-        domain::{JobKind, JobProgress, LeaseUpdate, NewJob, ProgressUpdate},
+        job::{JobKind, JobProgress, LeaseUpdate, NewJob, ProgressUpdate},
         location::DatasetLocation,
     };
     use lance_job_store::{JobStore, StoreError};
@@ -546,15 +498,12 @@ mod tests {
                     "s3://destination-bucket/data.lance",
                 )
                 .unwrap(),
-                submitted_at_ms: 3,
+                submission_timestamp_ms: 3,
             })
             .await
             .unwrap();
 
-        let first_claim = store
-            .claim_jobs("worker-a".to_owned(), 1, 100)
-            .await
-            .unwrap();
+        let first_claim = store.claim_jobs(1, 100).await.unwrap();
         assert_eq!(first_claim.len(), 1);
         assert_eq!(first_claim[0].job.id, job.id);
         assert_eq!(first_claim[0].job.attempt, 1);
@@ -571,10 +520,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(expired_error, StoreError::LeaseLost));
 
-        let reclaimed = store
-            .claim_jobs("worker-b".to_owned(), 1, 100)
-            .await
-            .unwrap();
+        let reclaimed = store.claim_jobs(1, 100).await.unwrap();
         assert_eq!(reclaimed.len(), 1);
         assert_eq!(reclaimed[0].job.attempt, 2);
 
@@ -597,21 +543,17 @@ mod tests {
         let store = SqliteJobStore::open_with_clock(":memory:", clock.clone()).unwrap();
         let job = store
             .create_job(NewJob {
-                source: source("nfs:///datasets/source"),
+                source: source("/datasets/source"),
                 kind: JobKind::Move,
                 destination: DatasetLocation::parse_destination(
                     "s3://destination-bucket/data.lance",
                 )
                 .unwrap(),
-                submitted_at_ms: 3,
+                submission_timestamp_ms: 3,
             })
             .await
             .unwrap();
-        let claim = store
-            .claim_jobs("worker-a".to_owned(), 1, 1_000)
-            .await
-            .unwrap()
-            .remove(0);
+        let claim = store.claim_jobs(1, 1_000).await.unwrap().remove(0);
 
         let progress = JobProgress {
             source_bytes_read: 100,
@@ -630,7 +572,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(checkpointed.lease_expiration_timestamp, Some(1_010));
+        assert_eq!(checkpointed.lease_expiration_timestamp_ms, Some(1_010));
 
         clock.set(21);
         let updated = store
@@ -643,7 +585,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.progress.rows_written, 10);
-        assert_eq!(updated.lease_expiration_timestamp, Some(2_000));
+        assert_eq!(updated.lease_expiration_timestamp_ms, Some(2_000));
 
         clock.set(22);
         let error = store
@@ -671,141 +613,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_overlapping_move_paths() {
-        let store = SqliteJobStore::open(":memory:").unwrap();
-        let error = store
-            .create_job(NewJob {
-                source: source("s3://source-bucket/data"),
-                kind: JobKind::Move,
-                destination: DatasetLocation::parse_destination(
-                    "s3://source-bucket/data/output.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 3,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::InvalidInput(_)));
-    }
-
-    #[tokio::test]
-    async fn active_move_reserves_its_source() {
-        let store = SqliteJobStore::open(":memory:").unwrap();
-        store
-            .create_job(NewJob {
-                source: source("nfs:///datasets/source"),
-                kind: JobKind::Move,
-                destination: DatasetLocation::parse_destination(
-                    "s3://destination-bucket/first.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 3,
-            })
-            .await
-            .unwrap();
-
-        let error = store
-            .create_job(NewJob {
-                source: source("nfs:///datasets/source/child"),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_destination(
-                    "s3://destination-bucket/second.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 6,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::Conflict(_)));
-
-        let store = SqliteJobStore::open(":memory:").unwrap();
-        store
-            .create_job(NewJob {
-                source: source("nfs:///datasets/source/child"),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_destination(
-                    "s3://destination-bucket/third.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 12,
-            })
-            .await
-            .unwrap();
-        let error = store
-            .create_job(NewJob {
-                source: source("nfs:///datasets/source"),
-                kind: JobKind::Move,
-                destination: DatasetLocation::parse_destination(
-                    "s3://destination-bucket/fourth.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 15,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::Conflict(_)));
-    }
-
-    #[tokio::test]
-    async fn reserves_overlapping_active_sources_and_destinations() {
-        let store = SqliteJobStore::open(":memory:").unwrap();
-        store
-            .create_job(NewJob {
-                source: source("s3://source-bucket/data"),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_destination(
-                    "s3://destination-bucket/data.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 3,
-            })
-            .await
-            .unwrap();
-
-        let error = store
-            .create_job(NewJob {
-                source: source("nfs:///datasets/other"),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_destination(
-                    "s3://destination-bucket/data.lance/nested",
-                )
-                .unwrap(),
-                submitted_at_ms: 6,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::Conflict(_)));
-
-        let error = store
-            .create_job(NewJob {
-                source: source("nfs:///datasets/third"),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_destination(
-                    "s3://source-bucket/data/output.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 9,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::Conflict(_)));
-
-        let error = store
-            .create_job(NewJob {
-                source: source("s3://destination-bucket/data.lance/source"),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_destination(
-                    "s3://another-destination/output.lance",
-                )
-                .unwrap(),
-                submitted_at_ms: 12,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::Conflict(_)));
-    }
-
-    #[tokio::test]
     async fn progress_invariant_is_atomic_across_connections() {
         let path = std::env::temp_dir().join(format!("lance-service-{}.db", uuid::Uuid::new_v4()));
         let clock = Arc::new(TestClock::new(10));
@@ -813,21 +620,17 @@ mod tests {
         let second = SqliteJobStore::open_with_clock(&path, clock.clone()).unwrap();
         let job = first
             .create_job(NewJob {
-                source: source("nfs:///datasets/source"),
+                source: source("/datasets/source"),
                 kind: JobKind::Copy,
                 destination: DatasetLocation::parse_destination(
                     "s3://destination-bucket/atomic.lance",
                 )
                 .unwrap(),
-                submitted_at_ms: 3,
+                submission_timestamp_ms: 3,
             })
             .await
             .unwrap();
-        let claim = first
-            .claim_jobs("worker-a".to_owned(), 1, 1_000)
-            .await
-            .unwrap()
-            .remove(0);
+        let claim = first.claim_jobs(1, 1_000).await.unwrap().remove(0);
 
         clock.set(20);
         let completed_update = first.checkpoint_progress(ProgressUpdate {

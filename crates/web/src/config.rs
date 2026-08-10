@@ -1,7 +1,6 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
 
-use clap::{Parser, ValueEnum};
-use tracing::Level;
+use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
 #[command(version, about)]
@@ -9,32 +8,8 @@ pub struct Config {
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub listen_address: SocketAddr,
 
-    #[arg(long, default_value = "./data/service.db")]
-    pub database_path: PathBuf,
-
-    #[arg(long, value_enum, default_value = "info")]
-    pub log_level: LogLevel,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-impl From<LogLevel> for Level {
-    fn from(value: LogLevel) -> Self {
-        match value {
-            LogLevel::Error => Self::ERROR,
-            LogLevel::Warn => Self::WARN,
-            LogLevel::Info => Self::INFO,
-            LogLevel::Debug => Self::DEBUG,
-            LogLevel::Trace => Self::TRACE,
-        }
-    }
+    #[arg(long, default_value = "sqlite://./data/service.db")]
+    pub database_url: String,
 }
 
 #[cfg(test)]
@@ -47,9 +22,6 @@ mod tests {
     fn defaults_match_web_contract() {
         let config = Config::parse_from(["lance-web"]);
         assert_eq!(config.listen_address.to_string(), "127.0.0.1:8080");
-        assert_eq!(
-            config.database_path,
-            std::path::Path::new("./data/service.db")
-        );
+        assert_eq!(config.database_url, "sqlite://./data/service.db");
     }
 }

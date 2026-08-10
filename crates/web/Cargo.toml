@@ -15,17 +15,13 @@ axum.workspace = true
 clap.workspace = true
 lance-conversion-core.workspace = true
 lance-job-store.workspace = true
-lance-job-store-sqlite.workspace = true
+lance-job-store-factory.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net"] }
-tracing.workspace = true
-tracing-subscriber.workspace = true
 uuid.workspace = true
 
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator.workspace = true
-
 [dev-dependencies]
+lance-job-store-sqlite.workspace = true
 serde_json.workspace = true
 tower.workspace = true
