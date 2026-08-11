@@ -7,6 +7,21 @@ Iceberg support is deferred.
 The service assumes that a source dataset remains immutable after schema
 validation and throughout conversion.
 
+## Why convert Parquet to Lance?
+
+Parquet is an interoperable columnar file format, but a directory of Parquet
+files does not provide dataset-level search or indexing. Lance turns those
+files into a versioned dataset designed for multimodal and AI workloads:
+
+- Scalar, full-text, and vector indexes accelerate filtering, text search, and
+  nearest-neighbor search without scanning every row.
+- Blob V2 stores image, audio, video, and other large payloads using inline,
+  packed, or dedicated Lance-managed storage.
+- Dataset metadata and transactional commits provide one consistent table
+  instead of requiring callers to coordinate a directory of independent files.
+- Efficient random row and column access supports interactive retrieval while
+  retaining an Arrow-compatible columnar schema.
+
 ## Milestones 0 through 3
 
 The service currently includes:

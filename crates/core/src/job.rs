@@ -8,7 +8,7 @@ pub const MAX_JOB_ATTEMPTS: u32 = 16;
 
 macro_rules! string_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case")]
         pub enum $name {
             $($variant),+
@@ -47,28 +47,26 @@ string_enum!(JobStatus {
     Failed => "failed",
 });
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IndexType {
-    Scalar,
-    BTree,
-    Bitmap,
-    LabelList,
-    Inverted,
-    NGram,
-    ZoneMap,
-    BloomFilter,
-    RTree,
-    Fm,
-    Vector,
-    IvfFlat,
-    IvfSq,
-    IvfPq,
-    IvfHnswSq,
-    IvfHnswPq,
-    IvfHnswFlat,
-    IvfRq,
-}
+string_enum!(IndexType {
+    Scalar => "scalar",
+    BTree => "b_tree",
+    Bitmap => "bitmap",
+    LabelList => "label_list",
+    Inverted => "inverted",
+    NGram => "n_gram",
+    ZoneMap => "zone_map",
+    BloomFilter => "bloom_filter",
+    RTree => "r_tree",
+    Fm => "fm",
+    Vector => "vector",
+    IvfFlat => "ivf_flat",
+    IvfSq => "ivf_sq",
+    IvfPq => "ivf_pq",
+    IvfHnswSq => "ivf_hnsw_sq",
+    IvfHnswPq => "ivf_hnsw_pq",
+    IvfHnswFlat => "ivf_hnsw_flat",
+    IvfRq => "ivf_rq",
+});
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobColumnSpec {

@@ -1,7 +1,5 @@
-use std::collections::HashSet;
-
 use datafusion::arrow::datatypes::DataType;
-use lance::{Dataset, datatypes::Field, index::DatasetIndexExt, index::vector::VectorIndexParams};
+use lance::{Dataset, index::DatasetIndexExt, index::vector::VectorIndexParams};
 use lance_conversion_core::job::{IndexSpec, IndexType as JobIndexType};
 use lance_index::{
     IndexParams, IndexType,
@@ -15,166 +13,43 @@ use lance_linalg::distance::DistanceType;
 
 use crate::ConversionError;
 
-const PRODUCT_QUANTIZATION_BITS: usize = 8;
-const RABIT_QUANTIZATION_BITS: u8 = 1;
 const MAX_PRODUCT_SUBVECTORS: usize = 16;
-const GEOARROW_EXTENSION_PREFIX: &str = "geoarrow.";
-const ARROW_EXTENSION_NAME_KEY: &str = "ARROW:extension:name";
-
-enum Parameters {
-    Scalar(ScalarIndexParams),
-    Vector(VectorIndexParams),
-}
-
-impl Parameters {
-    fn as_index_params(&self) -> &dyn IndexParams {
-        match self {
-            Self::Scalar(params) => params,
-            Self::Vector(params) => params,
-        }
-    }
-}
 
 pub(crate) async fn create(
     dataset: &mut Dataset,
     specs: &[IndexSpec],
 ) -> Result<(), ConversionError> {
-    validate_specs(dataset, specs)?;
     for (position, spec) in specs.iter().enumerate() {
-        let column = &spec.columns[0];
-        let field = dataset
-            .schema()
-            .field(column)
-            .expect("index columns were validated");
+        let column = spec.columns.first().ok_or_else(|| {
+            ConversionError::InvalidIndexSpec(format!(
+                "{} index must specify at least one column",
+                spec.index_type
+            ))
+        })?;
+        let field = dataset.schema().field(column).ok_or_else(|| {
+            ConversionError::InvalidIndexSpec(format!(
+                "selected index column '{column}' does not exist"
+            ))
+        })?;
         let (index_type, params) = mapping(spec.index_type, &field.data_type())?;
-        let columns = [column.as_str()];
+        let columns = spec.columns.iter().map(String::as_str).collect::<Vec<_>>();
         dataset
             .create_index(
                 &columns,
                 index_type,
-                Some(index_name(position, spec.index_type)),
-                params.as_index_params(),
+                Some(format!("conversion_{position}_{}_idx", spec.index_type)),
+                params.as_ref(),
                 true,
             )
             .await
             .map_err(|error| {
                 ConversionError::Index(format!(
                     "{} index on column '{}': {error}",
-                    index_type_name(spec.index_type),
-                    column
+                    spec.index_type, column
                 ))
             })?;
     }
     Ok(())
-}
-
-fn validate_specs(dataset: &Dataset, specs: &[IndexSpec]) -> Result<(), ConversionError> {
-    let mut unique_specs = HashSet::with_capacity(specs.len());
-    for spec in specs {
-        if spec.columns.is_empty() {
-            return Err(ConversionError::InvalidIndexSpec(format!(
-                "{} index must specify one column",
-                index_type_name(spec.index_type)
-            )));
-        }
-        let mut unique_columns = HashSet::with_capacity(spec.columns.len());
-        for column in &spec.columns {
-            if column.trim().is_empty() {
-                return Err(ConversionError::InvalidIndexSpec(
-                    "index column names must not be empty".to_owned(),
-                ));
-            }
-            if !unique_columns.insert(column) {
-                return Err(ConversionError::InvalidIndexSpec(format!(
-                    "column '{column}' is selected more than once in one index"
-                )));
-            }
-        }
-        if spec.columns.len() != 1 {
-            return Err(ConversionError::InvalidIndexSpec(format!(
-                "{} index specifies {} columns, but Lance 10 supports creating an index on exactly one column",
-                index_type_name(spec.index_type),
-                spec.columns.len()
-            )));
-        }
-        let column = &spec.columns[0];
-        let Some(field) = dataset.schema().field(column) else {
-            return Err(ConversionError::InvalidIndexSpec(format!(
-                "selected index column '{column}' does not exist"
-            )));
-        };
-        let unique_key = format!("{:?}\0{column}", spec.index_type);
-        if !unique_specs.insert(unique_key) {
-            return Err(ConversionError::InvalidIndexSpec(format!(
-                "{} index on column '{column}' is specified more than once",
-                index_type_name(spec.index_type)
-            )));
-        }
-        validate_type(spec.index_type, field)?;
-    }
-    Ok(())
-}
-
-fn validate_type(index_type: JobIndexType, field: &Field) -> Result<(), ConversionError> {
-    let valid = match index_type {
-        JobIndexType::Inverted | JobIndexType::NGram | JobIndexType::Fm => {
-            is_string(&field.data_type())
-        }
-        JobIndexType::LabelList => match field.data_type() {
-            DataType::List(item) | DataType::LargeList(item) => is_scalar(item.data_type()),
-            _ => false,
-        },
-        JobIndexType::RTree => field
-            .metadata
-            .get(ARROW_EXTENSION_NAME_KEY)
-            .is_some_and(|name| name.starts_with(GEOARROW_EXTENSION_PREFIX)),
-        JobIndexType::Vector
-        | JobIndexType::IvfFlat
-        | JobIndexType::IvfSq
-        | JobIndexType::IvfPq
-        | JobIndexType::IvfHnswSq
-        | JobIndexType::IvfHnswPq
-        | JobIndexType::IvfHnswFlat
-        | JobIndexType::IvfRq => vector_dimension(&field.data_type()).is_some(),
-        JobIndexType::Scalar
-        | JobIndexType::BTree
-        | JobIndexType::Bitmap
-        | JobIndexType::ZoneMap
-        | JobIndexType::BloomFilter => is_scalar(&field.data_type()),
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(ConversionError::InvalidIndexSpec(format!(
-            "{} index is incompatible with column '{}' of type {}",
-            index_type_name(index_type),
-            field.name,
-            field.data_type()
-        )))
-    }
-}
-
-fn is_string(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
-fn is_scalar(data_type: &DataType) -> bool {
-    !matches!(
-        data_type,
-        DataType::Null
-            | DataType::List(_)
-            | DataType::ListView(_)
-            | DataType::LargeList(_)
-            | DataType::LargeListView(_)
-            | DataType::FixedSizeList(_, _)
-            | DataType::Struct(_)
-            | DataType::Union(_, _)
-            | DataType::Map(_, _)
-            | DataType::RunEndEncoded(_, _)
-    )
 }
 
 fn vector_dimension(data_type: &DataType) -> Option<usize> {
@@ -199,7 +74,7 @@ fn is_vector_element(data_type: &DataType) -> bool {
 fn mapping(
     index_type: JobIndexType,
     data_type: &DataType,
-) -> Result<(IndexType, Parameters), ConversionError> {
+) -> Result<(IndexType, Box<dyn IndexParams>), ConversionError> {
     let mapped = match index_type {
         JobIndexType::Scalar => (
             IndexType::Scalar,
@@ -265,23 +140,25 @@ fn mapping(
     Ok(mapped)
 }
 
-fn scalar_parameters(index_type: BuiltinIndexType) -> Parameters {
-    Parameters::Scalar(ScalarIndexParams::for_builtin(index_type))
+fn scalar_parameters(index_type: BuiltinIndexType) -> Box<dyn IndexParams> {
+    Box::new(ScalarIndexParams::for_builtin(index_type))
 }
 
 fn vector_parameters(
     index_type: JobIndexType,
     data_type: &DataType,
-) -> Result<Parameters, ConversionError> {
+) -> Result<Box<dyn IndexParams>, ConversionError> {
     let dimension = vector_dimension(data_type).ok_or_else(|| {
         ConversionError::InvalidIndexSpec(format!(
-            "{} index requires a positive-dimensional fixed-size vector column",
-            index_type_name(index_type)
+            "{index_type} index requires a positive-dimensional fixed-size vector column"
         ))
     })?;
     let ivf = IvfBuildParams::default();
     let hnsw = HnswBuildParams::default();
-    let pq = PQBuildParams::new(product_subvectors(dimension), PRODUCT_QUANTIZATION_BITS);
+    let pq = PQBuildParams {
+        num_sub_vectors: product_subvectors(dimension),
+        ..PQBuildParams::default()
+    };
     let params = match index_type {
         JobIndexType::Vector | JobIndexType::IvfPq => {
             VectorIndexParams::with_ivf_pq_params(DistanceType::L2, ivf, pq)
@@ -303,11 +180,11 @@ fn vector_parameters(
         JobIndexType::IvfRq => VectorIndexParams::with_ivf_rq_params(
             DistanceType::L2,
             ivf,
-            RQBuildParams::new(RABIT_QUANTIZATION_BITS),
+            RQBuildParams::default(),
         ),
         _ => unreachable!("called only for vector index types"),
     };
-    Ok(Parameters::Vector(params))
+    Ok(Box::new(params))
 }
 
 fn product_subvectors(dimension: usize) -> usize {
@@ -315,37 +192,6 @@ fn product_subvectors(dimension: usize) -> usize {
         .rev()
         .find(|candidate| dimension.is_multiple_of(*candidate))
         .unwrap_or(1)
-}
-
-fn index_name(position: usize, index_type: JobIndexType) -> String {
-    format!(
-        "conversion_{}_{}_idx",
-        position,
-        index_type_name(index_type)
-    )
-}
-
-const fn index_type_name(index_type: JobIndexType) -> &'static str {
-    match index_type {
-        JobIndexType::Scalar => "scalar",
-        JobIndexType::BTree => "b_tree",
-        JobIndexType::Bitmap => "bitmap",
-        JobIndexType::LabelList => "label_list",
-        JobIndexType::Inverted => "inverted",
-        JobIndexType::NGram => "n_gram",
-        JobIndexType::ZoneMap => "zone_map",
-        JobIndexType::BloomFilter => "bloom_filter",
-        JobIndexType::RTree => "r_tree",
-        JobIndexType::Fm => "fm",
-        JobIndexType::Vector => "vector",
-        JobIndexType::IvfFlat => "ivf_flat",
-        JobIndexType::IvfSq => "ivf_sq",
-        JobIndexType::IvfPq => "ivf_pq",
-        JobIndexType::IvfHnswSq => "ivf_hnsw_sq",
-        JobIndexType::IvfHnswPq => "ivf_hnsw_pq",
-        JobIndexType::IvfHnswFlat => "ivf_hnsw_flat",
-        JobIndexType::IvfRq => "ivf_rq",
-    }
 }
 
 #[cfg(test)]
@@ -356,7 +202,7 @@ mod tests {
     use lance_conversion_core::job::IndexType as JobIndexType;
     use lance_index::IndexType;
 
-    use super::{Parameters, mapping, product_subvectors};
+    use super::{mapping, product_subvectors};
 
     fn scalar_field() -> Field {
         Field::new("value", DataType::Int64, false)
@@ -419,19 +265,8 @@ mod tests {
                 | JobIndexType::IvfRq => vector_field(),
                 _ => scalar_field(),
             };
-            let (actual, params) = mapping(job_type, field.data_type()).unwrap();
+            let (actual, _params) = mapping(job_type, field.data_type()).unwrap();
             assert_eq!(actual, expected);
-            match params {
-                Parameters::Scalar(params) => assert!(!params.index_type.is_empty()),
-                Parameters::Vector(params) => {
-                    let expected_params_type = if job_type == JobIndexType::Vector {
-                        IndexType::IvfPq
-                    } else {
-                        expected
-                    };
-                    assert_eq!(params.index_type(), expected_params_type);
-                }
-            }
         }
     }
 

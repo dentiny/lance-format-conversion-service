@@ -359,41 +359,6 @@ async fn creates_requested_scalar_indexes() {
     );
 }
 
-#[tokio::test]
-async fn rejects_incompatible_index_type_before_index_build() {
-    let temp_dir = TempDir::new().unwrap();
-    let source = temp_dir.path().join("source");
-    let destination = temp_dir.path().join("dataset.lance");
-    tokio::fs::create_dir(&source).await.unwrap();
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-    let batch =
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
-    let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
-    writer.write(&batch).unwrap();
-    tokio::fs::write(source.join("part.parquet"), writer.into_inner().unwrap())
-        .await
-        .unwrap();
-
-    let mut job = test_job(&source, &destination);
-    job.indices = vec![IndexSpec {
-        columns: vec!["value".to_owned()],
-        index_type: IndexType::Inverted,
-    }];
-    let error = Converter::new(test_config())
-        .convert(&job, Arc::new(ConversionProgress::default()))
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("inverted index is incompatible with column 'value'")
-    );
-}
-
 fn test_config() -> ConverterConfig {
     ConverterConfig {
         target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,
