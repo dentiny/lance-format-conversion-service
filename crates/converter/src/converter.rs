@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, sync::Arc};
+use std::sync::Arc;
 
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use lance::dataset::{ExternalBlobMode, InsertBuilder, WriteMode, WriteParams};
@@ -12,14 +12,6 @@ use crate::{
     ConversionError, ConversionProgress, ConverterConfig, destination::Destination, indexes,
     schema, source, validation,
 };
-
-const MIB: u64 = 1024 * 1024;
-
-struct ByteConfig {
-    max_bytes_per_file: usize,
-    inline_threshold: usize,
-    dedicated_threshold: NonZeroUsize,
-}
 
 pub struct Converter {
     config: ConverterConfig,
@@ -42,7 +34,7 @@ impl Converter {
         job: &Job,
         progress: Arc<ConversionProgress>,
     ) -> Result<JobProgress, ConversionError> {
-        let byte_config = validate_config(self.config)?;
+        let byte_config = self.config.validate()?;
 
         let source = DatasetLocation::parse_location(&job.source_uri)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
@@ -120,43 +112,4 @@ impl Converter {
         }
         Ok(progress.snapshot())
     }
-}
-
-fn validate_config(config: ConverterConfig) -> Result<ByteConfig, ConversionError> {
-    let max_bytes_per_file =
-        mib_to_usize(config.target_lance_file_size_mib, "target Lance file size")?;
-    let inline_threshold = mib_to_usize(config.blob_inline_threshold_mib, "blob inline threshold")?;
-    let dedicated_threshold = mib_to_usize(
-        config.blob_dedicated_threshold_mib,
-        "blob dedicated threshold",
-    )?;
-    if inline_threshold >= dedicated_threshold {
-        return Err(ConversionError::InvalidConfiguration(
-            "blob inline threshold must be smaller than blob dedicated threshold".to_owned(),
-        ));
-    }
-    if inline_threshold > max_bytes_per_file {
-        return Err(ConversionError::InvalidConfiguration(
-            "blob inline threshold exceeds target Lance file size".to_owned(),
-        ));
-    }
-    let dedicated_threshold = NonZeroUsize::new(dedicated_threshold).ok_or_else(|| {
-        ConversionError::InvalidConfiguration(
-            "blob dedicated threshold must be greater than zero".to_owned(),
-        )
-    })?;
-    Ok(ByteConfig {
-        max_bytes_per_file,
-        inline_threshold,
-        dedicated_threshold,
-    })
-}
-
-fn mib_to_usize(value: u64, setting: &str) -> Result<usize, ConversionError> {
-    value
-        .checked_mul(MIB)
-        .and_then(|bytes| usize::try_from(bytes).ok())
-        .ok_or_else(|| {
-            ConversionError::InvalidConfiguration(format!("{setting} does not fit usize bytes"))
-        })
 }
