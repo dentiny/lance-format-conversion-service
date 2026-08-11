@@ -6,6 +6,8 @@ pub enum ConversionError {
     InvalidConfiguration(String),
     #[error("invalid source: {0}")]
     InvalidSource(String),
+    #[error("invalid destination: {0}")]
+    InvalidDestination(String),
     #[error("unsupported source schema: {0}")]
     UnsupportedType(String),
     #[error("source read failed: {0}")]
