@@ -7,36 +7,46 @@ use reqwest::Url;
 
 use crate::ConversionError;
 
-pub(crate) fn configure(
-    destination_uri: &str,
-    params: &mut WriteParams,
-) -> Result<(), ConversionError> {
-    let url = Url::parse(destination_uri);
-    if url.as_ref().map(Url::scheme) != Ok("s3") {
-        return Ok(());
-    }
-    let url = url.map_err(|error| ConversionError::InvalidDestination(error.to_string()))?;
-    let bucket = url
-        .host_str()
-        .filter(|bucket| !bucket.is_empty())
-        .ok_or_else(|| ConversionError::InvalidDestination("S3 bucket is missing".to_owned()))?;
-    let store: Arc<dyn ObjectStore> = Arc::new(
-        AmazonS3Builder::from_env()
-            .with_bucket_name(bucket)
-            .build()
-            .map_err(|error| ConversionError::InvalidDestination(error.to_string()))?,
-    );
-    let root = Url::parse(&format!("s3://{bucket}"))
-        .map_err(|error| ConversionError::InvalidDestination(error.to_string()))?;
+pub(crate) struct Destination<'a> {
+    uri: &'a str,
+}
 
-    #[allow(deprecated)]
-    {
-        params.store_params = Some(ObjectStoreParams {
-            object_store: Some((store, root)),
-            list_is_lexically_ordered: Some(true),
-            ..ObjectStoreParams::default()
-        });
+impl<'a> Destination<'a> {
+    pub(crate) const fn new(uri: &'a str) -> Self {
+        Self { uri }
     }
-    params.commit_handler = Some(Arc::new(ConditionalPutCommitHandler));
-    Ok(())
+
+    pub(crate) fn configure(self, params: &mut WriteParams) -> Result<(), ConversionError> {
+        let Ok(mut root) = Url::parse(self.uri) else {
+            return Ok(());
+        };
+        if root.scheme() != "s3" {
+            return Ok(());
+        }
+
+        let store: Arc<dyn ObjectStore> = Arc::new(
+            AmazonS3Builder::from_env()
+                .with_url(self.uri)
+                .build()
+                .map_err(invalid_destination)?,
+        );
+        root.set_path("");
+        root.set_query(None);
+        root.set_fragment(None);
+
+        #[allow(deprecated)]
+        {
+            params.store_params = Some(ObjectStoreParams {
+                object_store: Some((store, root)),
+                list_is_lexically_ordered: Some(true),
+                ..ObjectStoreParams::default()
+            });
+        }
+        params.commit_handler = Some(Arc::new(ConditionalPutCommitHandler));
+        Ok(())
+    }
+}
+
+fn invalid_destination(error: object_store::Error) -> ConversionError {
+    ConversionError::InvalidDestination(error.to_string())
 }

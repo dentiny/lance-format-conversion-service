@@ -8,7 +8,9 @@ use lance_conversion_core::{
 };
 use lance_file::version::LanceFileVersion;
 
-use crate::{ConversionError, ConversionProgress, ConverterConfig, destination, schema, source};
+use crate::{
+    ConversionError, ConversionProgress, ConverterConfig, destination::Destination, schema, source,
+};
 
 const MIB: u64 = 1024 * 1024;
 
@@ -94,9 +96,11 @@ impl Converter {
         let stream = schema::apply_blob_inline_threshold(stream, inline_threshold);
 
         let mut params = WriteParams::with_storage_version(LanceFileVersion::V2_3);
+        // Overwrite prevents a full-job retry from appending duplicate rows.
+        // Resuming partial work still requires durable fragment checkpoints.
         params.mode = WriteMode::Overwrite;
         params.max_bytes_per_file = max_bytes_per_file;
-        destination::configure(&job.destination_uri, &mut params)?;
+        Destination::new(&job.destination_uri).configure(&mut params)?;
         let callback_progress = Arc::clone(&progress);
         // One conversion uses one sequential Lance writer. It may rotate files
         // at the configured size, but never writes fragments in parallel.

@@ -43,10 +43,11 @@ the job store but does not claim or execute jobs.
 
 ## TODO
 
-- Add the pre-enqueue schema UI. After users select blob columns, let them
-  select columns to index and choose an index type from a dropdown. Persist the
-  blob and index specifications with the job, validate them before enqueue,
-  and create the requested indexes after conversion.
+- In the next milestone, add the pre-enqueue schema UI and store the selected
+  URL-backed blob columns as part of each `Job`. Also let users select columns
+  to index and choose an index type from a dropdown. Persist and validate all
+  blob and index specifications before enqueue, use the blob specifications
+  during conversion, and create the requested indexes afterward.
 - Implement reconciler polling, bounded Tokio workers, lease renewal, progress
   checkpoints, terminal job transitions, and structured retries capped at 16
   attempts.
