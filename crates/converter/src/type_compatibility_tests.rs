@@ -15,6 +15,7 @@ use crate::{ConversionProgress, Converter, ConverterConfig};
 
 const TARGET_FILE_SIZE_MIB: u64 = 512;
 const BLOB_INLINE_THRESHOLD_MIB: u64 = 2;
+const BLOB_DEDICATED_THRESHOLD_MIB: u64 = 4;
 
 #[tokio::test]
 async fn converts_supported_parquet_types_to_lance() {
@@ -49,6 +50,7 @@ async fn convert_field(root: &std::path::Path, field: &Field) -> Result<(), Stri
     Converter::new(ConverterConfig {
         target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,
         blob_inline_threshold_mib: BLOB_INLINE_THRESHOLD_MIB,
+        blob_dedicated_threshold_mib: BLOB_DEDICATED_THRESHOLD_MIB,
     })
     .convert(
         &get_test_job(&source, &destination),
@@ -157,6 +159,8 @@ fn get_test_job(source: &std::path::Path, destination: &std::path::Path) -> Job 
         kind: JobKind::Copy,
         source_uri: source.to_string_lossy().into_owned(),
         destination_uri: destination.to_string_lossy().into_owned(),
+        blob_columns: Vec::new(),
+        indices: Vec::new(),
         status: JobStatus::Running,
         creation_timestamp_ms: 1,
         update_timestamp_ms: 1,

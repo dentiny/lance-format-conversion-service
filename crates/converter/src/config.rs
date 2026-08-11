@@ -7,4 +7,8 @@ pub struct ConverterConfig {
     ///
     /// Larger values are stored in Lance-managed external blob files.
     pub blob_inline_threshold_mib: u64,
+    /// Maximum Blob V2 value size, in MiB, stored in packed blob storage.
+    ///
+    /// Larger values are stored in dedicated Lance-managed blob files.
+    pub blob_dedicated_threshold_mib: u64,
 }

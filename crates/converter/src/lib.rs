@@ -2,6 +2,7 @@ mod config;
 mod converter;
 mod destination;
 mod error;
+mod indexes;
 mod progress;
 mod schema;
 mod source;

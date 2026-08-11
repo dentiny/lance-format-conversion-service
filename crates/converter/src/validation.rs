@@ -3,12 +3,9 @@ use lance::Dataset;
 use crate::ConversionError;
 
 pub(crate) async fn validate_row_count(
-    destination_uri: &str,
+    destination: &Dataset,
     expected_rows: u64,
 ) -> Result<(), ConversionError> {
-    let destination = Dataset::open(destination_uri)
-        .await
-        .map_err(|error| ConversionError::Validation(error.to_string()))?;
     let actual_rows = destination
         .count_rows(None)
         .await

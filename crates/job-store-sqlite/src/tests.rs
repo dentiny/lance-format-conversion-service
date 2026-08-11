@@ -5,8 +5,8 @@ use std::sync::{
 
 use lance_conversion_core::{
     job::{
-        CompletionUpdate, FailureUpdate, JobKind, JobProgress, JobStatus, LeaseUpdate,
-        MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
+        BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobKind,
+        JobProgress, JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
     },
     location::DatasetLocation,
 };
@@ -46,6 +46,8 @@ async fn created_job_can_be_listed() {
             source: source("/datasets/source"),
             kind: JobKind::Copy,
             destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await
@@ -66,6 +68,69 @@ async fn created_job_can_be_listed() {
 }
 
 #[tokio::test]
+async fn blob_and_index_specs_round_trip() {
+    let store = SqliteJobStore::open(":memory:").await.unwrap();
+    let destination_uri = "s3://destination-bucket/specs.lance";
+    let blob_columns = vec![BlobColumnSpec {
+        column: "image".to_owned(),
+    }];
+    let indices = vec![
+        IndexSpec {
+            columns: vec!["category".to_owned()],
+            index_type: IndexType::Bitmap,
+        },
+        IndexSpec {
+            columns: vec!["location".to_owned()],
+            index_type: IndexType::RTree,
+        },
+    ];
+
+    store
+        .create_job(NewJob {
+            creator: "test-user".to_owned(),
+            source: source("/datasets/source"),
+            kind: JobKind::Copy,
+            destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+            blob_columns: blob_columns.clone(),
+            indices: indices.clone(),
+            creation_timestamp_ms: 3,
+        })
+        .await
+        .unwrap();
+
+    let job = store.get_job(destination_uri).await.unwrap();
+    assert_eq!(job.blob_columns, blob_columns);
+    assert_eq!(job.indices, indices);
+}
+
+#[tokio::test]
+async fn existing_database_is_migrated_with_empty_specs() {
+    let database = tempfile::NamedTempFile::new().unwrap();
+    let pool = sqlx::SqlitePool::connect(database.path().to_str().unwrap())
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO jobs(
+            creator, kind, source_uri, destination_uri, status,
+            creation_timestamp_ms, update_timestamp_ms
+         ) VALUES ('test-user', 'copy', '/source', '/destination', 'queuing', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let store = SqliteJobStore::open(database.path()).await.unwrap();
+    let job = store.get_job("/destination").await.unwrap();
+    assert!(job.blob_columns.is_empty());
+    assert!(job.indices.is_empty());
+}
+
+#[tokio::test]
 async fn claiming_a_job_sets_its_status_to_running() {
     let clock = Arc::new(TestClock::new(10));
     let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
@@ -78,6 +143,8 @@ async fn claiming_a_job_sets_its_status_to_running() {
             kind: JobKind::Copy,
             destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
                 .unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await
@@ -106,6 +173,8 @@ async fn updating_progress_keeps_job_running() {
             kind: JobKind::Move,
             destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
                 .unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await
@@ -146,6 +215,8 @@ async fn updating_lease_keeps_job_running() {
             kind: JobKind::Copy,
             destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
                 .unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await
@@ -182,6 +253,8 @@ async fn completing_a_job_clears_its_lease() {
             source: source("/datasets/source"),
             kind: JobKind::Copy,
             destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await
@@ -221,6 +294,8 @@ async fn failures_retry_until_attempt_cap() {
             source: source("/datasets/source"),
             kind: JobKind::Copy,
             destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await
@@ -259,6 +334,8 @@ async fn final_expired_attempt_becomes_failed() {
             source: source("/datasets/source"),
             kind: JobKind::Copy,
             destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+            blob_columns: Vec::new(),
+            indices: Vec::new(),
             creation_timestamp_ms: 3,
         })
         .await

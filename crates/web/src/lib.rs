@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use lance_conversion_core::{
-    job::{Job, JobKind, NewJob},
+    job::{BlobColumnSpec, IndexSpec, Job, JobKind, NewJob},
     location::DatasetLocation,
 };
 use lance_job_store::{JobStore, StoreError};
@@ -50,6 +50,10 @@ struct CreateJobRequest {
     source_uri: String,
     kind: JobKind,
     destination_uri: String,
+    #[serde(default)]
+    blob_columns: Vec<BlobColumnSpec>,
+    #[serde(default)]
+    indices: Vec<IndexSpec>,
 }
 
 async fn create_job(
@@ -67,6 +71,8 @@ async fn create_job(
             source,
             kind: request.kind,
             destination,
+            blob_columns: request.blob_columns,
+            indices: request.indices,
             creation_timestamp_ms: now_ms()?,
         })
         .await?;
@@ -135,10 +141,13 @@ mod tests {
     };
     use tower::ServiceExt;
 
+    use lance_conversion_core::job::IndexType;
     use lance_job_store::StoreError;
     use lance_job_store_sqlite::SqliteJobStore;
 
     use crate::{ApiError, ErrorBody, router};
+
+    const TEST_RESPONSE_BODY_LIMIT: usize = 64 * 1024;
 
     #[tokio::test]
     async fn health_endpoint_is_available() {
@@ -176,13 +185,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn job_submission_maps_blob_and_index_specs() {
+        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        let app = router(store.clone());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/jobs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{
+                            "creator":"test-user",
+                            "source_uri":"s3://source-bucket/data",
+                            "kind":"copy",
+                            "destination_uri":"s3://destination-bucket/specs.lance",
+                            "blob_columns":[{"column":"image"}],
+                            "indices":[{
+                                "columns":["embedding"],
+                                "index_type":"ivf_hnsw_pq"
+                            }]
+                        }"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/jobs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let jobs: Vec<lance_conversion_core::job::Job> = serde_json::from_slice(
+            &to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(jobs[0].blob_columns[0].column, "image");
+        assert_eq!(jobs[0].indices[0].columns, ["embedding"]);
+        assert_eq!(jobs[0].indices[0].index_type, IndexType::IvfHnswPq);
+    }
+
+    #[tokio::test]
     async fn internal_errors_are_not_disclosed() {
         let response =
             ApiError::Store(StoreError::Database("secret path".to_owned())).into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let error: ErrorBody =
-            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
-                .unwrap();
+        let error: ErrorBody = serde_json::from_slice(
+            &to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(error.error, "internal server error");
     }
 }

@@ -19,6 +19,10 @@ pub const DEFAULT_PROGRESS_INTERVAL_SECS: NonZeroU64 = NonZeroU64::new(30).unwra
 pub const DEFAULT_TARGET_LANCE_FILE_SIZE_MIB: NonZeroU64 = NonZeroU64::new(512).unwrap();
 /// Default Blob V2 inline payload threshold in MiB.
 pub const DEFAULT_BLOB_INLINE_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(2).unwrap();
+/// Default Blob V2 dedicated-file payload threshold in MiB.
+pub const DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(4).unwrap();
+const MIB: u64 = 1024 * 1024;
+
 #[derive(Debug, Clone, Parser)]
 #[command(version, about)]
 pub struct Config {
@@ -45,6 +49,9 @@ pub struct Config {
 
     #[arg(long, default_value_t = DEFAULT_BLOB_INLINE_THRESHOLD_MIB)]
     pub blob_inline_threshold_mib: NonZeroU64,
+
+    #[arg(long, default_value_t = DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB)]
+    pub blob_dedicated_threshold_mib: NonZeroU64,
 }
 
 impl Config {
@@ -54,7 +61,7 @@ impl Config {
     ///
     /// Returns an error when lease renewal is not shorter than the lease,
     /// progress updates are less frequent than lease renewal, or the blob
-    /// inline threshold exceeds the target Lance file size.
+    /// thresholds are inconsistent or do not fit the platform's byte counts.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.lease_renew_interval_secs >= self.lease_duration_secs {
             return Err(ConfigError::InvalidInput(
@@ -71,6 +78,23 @@ impl Config {
                 "blob inline threshold must not exceed the target Lance file size",
             ));
         }
+        if self.blob_inline_threshold_mib >= self.blob_dedicated_threshold_mib {
+            return Err(ConfigError::InvalidInput(
+                "blob inline threshold must be smaller than blob dedicated threshold",
+            ));
+        }
+        validate_mib_bytes(
+            self.target_lance_file_size_mib,
+            "target Lance file size does not fit usize bytes",
+        )?;
+        validate_mib_bytes(
+            self.blob_inline_threshold_mib,
+            "blob inline threshold does not fit usize bytes",
+        )?;
+        validate_mib_bytes(
+            self.blob_dedicated_threshold_mib,
+            "blob dedicated threshold does not fit usize bytes",
+        )?;
         self.convert_lease_duration_ms()?;
         Ok(())
     }
@@ -83,6 +107,15 @@ impl Config {
                 "lease duration does not fit milliseconds",
             ))
     }
+}
+
+fn validate_mib_bytes(value: NonZeroU64, message: &'static str) -> Result<(), ConfigError> {
+    value
+        .get()
+        .checked_mul(MIB)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .map(|_| ())
+        .ok_or(ConfigError::InvalidInput(message))
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

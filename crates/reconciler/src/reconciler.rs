@@ -284,6 +284,8 @@ mod tests {
                 kind: JobKind::Copy,
                 destination: DatasetLocation::parse_location(destination.to_string_lossy())
                     .unwrap(),
+                blob_columns: Vec::new(),
+                indices: Vec::new(),
                 creation_timestamp_ms: TEST_CREATION_TIMESTAMP_MS,
             })
             .await
@@ -295,6 +297,7 @@ mod tests {
         let converter = Arc::new(Converter::new(ConverterConfig {
             target_lance_file_size_mib: config.target_lance_file_size_mib.get(),
             blob_inline_threshold_mib: config.blob_inline_threshold_mib.get(),
+            blob_dedicated_threshold_mib: config.blob_dedicated_threshold_mib.get(),
         }));
         let trait_store: Arc<dyn JobStore> = store.clone();
         run_job(

@@ -12,22 +12,27 @@ use sqlx::{
 };
 
 use lance_conversion_core::job::{
-    ClaimedJob, CompletionUpdate, FailureUpdate, Job, JobError, JobProgress, JobStatus,
-    LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
+    BlobColumnSpec, ClaimedJob, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError,
+    JobProgress, JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
 use lance_job_store::{JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const JOB_SPECS_MIGRATION: &str = include_str!("../migrations/0002_job_specs.sql");
+const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
+const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_JOBS_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
-    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    blob_columns_json, indices_json
     FROM jobs
     ORDER BY creation_timestamp_ms DESC, destination_uri DESC
     LIMIT ?1";
 const LOAD_JOB_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
-    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    blob_columns_json, indices_json
     FROM jobs
     WHERE destination_uri = ?1";
 
@@ -79,10 +84,7 @@ impl SqliteJobStore {
             .connect_with(options)
             .await
             .map_err(database_error)?;
-        sqlx::raw_sql(INITIAL_MIGRATION)
-            .execute(&pool)
-            .await
-            .map_err(database_error)?;
+        apply_migrations(&pool).await?;
 
         Ok(Self { pool, clock })
     }
@@ -98,6 +100,41 @@ impl SqliteJobStore {
     pub(super) async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
         let mut connection = self.pool.acquire().await.map_err(database_error)?;
         load_job(&mut connection, destination_uri).await
+    }
+}
+
+async fn apply_migrations(pool: &SqlitePool) -> Result<(), StoreError> {
+    sqlx::raw_sql(INITIAL_MIGRATION)
+        .execute(pool)
+        .await
+        .map_err(database_error)?;
+
+    let columns = sqlx::query("PRAGMA table_info(jobs)")
+        .fetch_all(pool)
+        .await
+        .map_err(database_error)?;
+    let has_blob_columns = columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == BLOB_COLUMNS_JSON_COLUMN)
+    });
+    let has_indices = columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == INDICES_JSON_COLUMN)
+    });
+
+    match (has_blob_columns, has_indices) {
+        (true, true) => Ok(()),
+        (false, false) => {
+            let mut transaction = pool.begin().await.map_err(database_error)?;
+            sqlx::raw_sql(JOB_SPECS_MIGRATION)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+            transaction.commit().await.map_err(database_error)
+        }
+        _ => Err(StoreError::Database(
+            "job specification migration is partially applied".to_owned(),
+        )),
     }
 }
 
@@ -120,18 +157,22 @@ impl Clock for SystemClock {
 #[async_trait]
 impl JobStore for SqliteJobStore {
     async fn create_job(&self, job: NewJob) -> Result<(), StoreError> {
+        let blob_columns_json = serialize_json(&job.blob_columns)?;
+        let indices_json = serialize_json(&job.indices)?;
         let mut transaction = self.begin_immediate().await?;
         sqlx::query(
             "INSERT INTO jobs(
                 creator, kind, source_uri, destination_uri, status,
-                creation_timestamp_ms, update_timestamp_ms
-             ) VALUES (?1, ?2, ?3, ?4, 'queuing', ?5, ?5)",
+                creation_timestamp_ms, update_timestamp_ms, blob_columns_json, indices_json
+             ) VALUES (?1, ?2, ?3, ?4, 'queuing', ?5, ?5, ?6, ?7)",
         )
         .bind(job.creator)
         .bind(job.kind.to_string())
         .bind(job.source.uri())
         .bind(job.destination.uri())
         .bind(job.creation_timestamp_ms)
+        .bind(blob_columns_json)
+        .bind(indices_json)
         .execute(&mut *transaction)
         .await
         .map_err(job_insert_error)?;
@@ -477,24 +518,37 @@ async fn load_job(
 }
 
 fn row_to_job(row: &SqliteRow) -> Result<Job, StoreError> {
-    let error_reasons_json = row.try_get::<String, _>(8).map_err(database_error)?;
-    let error_reasons = serde_json::from_str::<Vec<JobError>>(&error_reasons_json)
-        .map_err(|error| StoreError::Database(error.to_string()))?;
+    let error_reasons_json = row
+        .try_get::<String, _>("error_reasons_json")
+        .map_err(database_error)?;
+    let error_reasons = deserialize_json::<Vec<JobError>>(&error_reasons_json)?;
+    let blob_columns_json = row
+        .try_get::<String, _>(BLOB_COLUMNS_JSON_COLUMN)
+        .map_err(database_error)?;
+    let indices_json = row
+        .try_get::<String, _>(INDICES_JSON_COLUMN)
+        .map_err(database_error)?;
     Ok(Job {
-        creator: row.try_get(0).map_err(database_error)?,
-        kind: parse_value(&row.try_get::<String, _>(1).map_err(database_error)?)?,
-        source_uri: row.try_get(2).map_err(database_error)?,
-        destination_uri: row.try_get(3).map_err(database_error)?,
-        status: parse_value(&row.try_get::<String, _>(4).map_err(database_error)?)?,
-        creation_timestamp_ms: row.try_get(5).map_err(database_error)?,
-        update_timestamp_ms: row.try_get(6).map_err(database_error)?,
-        attempt: i64_to_u32(row.try_get(7).map_err(database_error)?)?,
+        creator: row.try_get("creator").map_err(database_error)?,
+        kind: parse_value(&row.try_get::<String, _>("kind").map_err(database_error)?)?,
+        source_uri: row.try_get("source_uri").map_err(database_error)?,
+        destination_uri: row.try_get("destination_uri").map_err(database_error)?,
+        blob_columns: deserialize_json::<Vec<BlobColumnSpec>>(&blob_columns_json)?,
+        indices: deserialize_json::<Vec<IndexSpec>>(&indices_json)?,
+        status: parse_value(&row.try_get::<String, _>("status").map_err(database_error)?)?,
+        creation_timestamp_ms: row
+            .try_get("creation_timestamp_ms")
+            .map_err(database_error)?,
+        update_timestamp_ms: row.try_get("update_timestamp_ms").map_err(database_error)?,
+        attempt: i64_to_u32(row.try_get("attempt").map_err(database_error)?)?,
         error_reasons,
-        lease_expiration_timestamp_ms: row.try_get(9).map_err(database_error)?,
+        lease_expiration_timestamp_ms: row
+            .try_get("lease_expiration_timestamp_ms")
+            .map_err(database_error)?,
         progress: JobProgress {
-            rows_read: i64_to_u64(row.try_get(10).map_err(database_error)?)?,
-            rows_written: i64_to_u64(row.try_get(11).map_err(database_error)?)?,
-            rows_total: i64_to_u64(row.try_get(12).map_err(database_error)?)?,
+            rows_read: i64_to_u64(row.try_get("rows_read").map_err(database_error)?)?,
+            rows_written: i64_to_u64(row.try_get("rows_written").map_err(database_error)?)?,
+            rows_total: i64_to_u64(row.try_get("rows_total").map_err(database_error)?)?,
         },
     })
 }
@@ -505,6 +559,14 @@ where
     T::Err: std::fmt::Display,
 {
     T::from_str(value).map_err(|error| StoreError::Database(error.to_string()))
+}
+
+fn serialize_json<T: serde::Serialize>(value: &T) -> Result<String, StoreError> {
+    serde_json::to_string(value).map_err(|error| StoreError::Worker(error.to_string()))
+}
+
+fn deserialize_json<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, StoreError> {
+    serde_json::from_str(value).map_err(|error| StoreError::Database(error.to_string()))
 }
 
 fn i64_to_u64(value: i64) -> Result<u64, StoreError> {

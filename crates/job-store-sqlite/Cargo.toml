@@ -14,9 +14,11 @@ workspace = true
 async-trait.workspace = true
 lance-conversion-core.workspace = true
 lance-job-store.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

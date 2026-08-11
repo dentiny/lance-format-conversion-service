@@ -7,7 +7,7 @@ Iceberg support is deferred.
 The service assumes that a source dataset remains immutable after schema
 validation and throughout conversion.
 
-## Milestones 0 through 2
+## Milestones 0 through 3
 
 The service currently includes:
 
@@ -24,7 +24,9 @@ The service currently includes:
 - Parquet-directory readers for NFS and AWS S3
 - Hugging Face dataset Parquet discovery and direct HTTP streaming
 - Lance 2.3 overwrite writes with a configurable soft file-size target
-- Blob V2 inline-threshold metadata for columns already marked as Blob V2
+- Persisted per-job blob-column and Lance index specifications
+- URL-backed Blob V2 ingestion with configurable inline and dedicated thresholds
+- Post-conversion creation of all user-creatable Lance index types
 - Bounded reconciler polling and conversion workers
 - Lease renewal, 30-second progress checkpoints, and attempt fencing
 - Terminal success/failure transitions and structured retries capped at 16
@@ -47,11 +49,9 @@ its conversion workers in one process.
 
 ## TODO
 
-- In the next milestone, add the pre-enqueue schema UI and store the selected
-  URL-backed blob columns as part of each `Job`. Also let users select columns
-  to index and choose an index type from a dropdown. Persist and validate all
-  blob and index specifications before enqueue, use the blob specifications
-  during conversion, and create the requested indexes afterward.
+- In the next milestone, add the pre-enqueue schema UI. Let users select
+  URL-backed blob columns and index columns/types, then validate those
+  selections against the inspected source schema before enqueue.
 - Add parallel Lance fragment writers for large datasets. The initial
   implementation deliberately uses one sequential writer per conversion job.
 - Preserve bounded end-to-end backpressure between source readers and Lance
@@ -107,7 +107,8 @@ cargo run -p lance-reconciler -- \
   --lease-renew-interval-secs 300 \
   --progress-interval-secs 30 \
   --target-lance-file-size-mib 512 \
-  --blob-inline-threshold-mib 2
+  --blob-inline-threshold-mib 2 \
+  --blob-dedicated-threshold-mib 4
 ```
 
 Runtime service configuration uses command-line flags. Credentials must not be
@@ -142,6 +143,8 @@ curl -X POST http://127.0.0.1:8080/v1/jobs \
     "creator":"test-user",
     "source_uri":"s3://source-bucket/datasets/images",
     "kind":"copy",
-    "destination_uri":"s3://destination-bucket/datasets/images.lance"
+    "destination_uri":"s3://destination-bucket/datasets/images.lance",
+    "blob_columns":[{"column":"image_url"}],
+    "indices":[{"columns":["label"],"index_type":"bitmap"}]
   }'
 ```
