@@ -19,6 +19,8 @@ files into a versioned dataset designed for multimodal and AI workloads:
   packed, or dedicated Lance-managed storage.
 - Dataset metadata and transactional commits provide one consistent table
   instead of requiring callers to coordinate a directory of independent files.
+- Fragment-based updates support adding and backfilling columns without
+  rewriting the entire dataset or every existing data file.
 - Efficient random row and column access supports interactive retrieval while
   retaining an Arrow-compatible columnar schema.
 
