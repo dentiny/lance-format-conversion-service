@@ -130,11 +130,18 @@ pub enum ReconcilerError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use clap::Parser;
+    use datafusion::{
+        arrow::{
+            array::{Int64Array, RecordBatch},
+            datatypes::{DataType, Field, Schema},
+        },
+        parquet::arrow::ArrowWriter,
+    };
     use lance_conversion_core::{
-        job::{JobKind, JobStatus, NewJob},
+        job::{ClaimedJob, JobKind, JobStatus, NewJob},
         location::DatasetLocation,
     };
     use lance_converter::{Converter, ConverterConfig};
@@ -146,12 +153,76 @@ mod tests {
     use crate::config::Config;
 
     #[tokio::test]
+    async fn conversion_success_marks_job_succeeded() {
+        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        tokio::fs::create_dir(&source).await.unwrap();
+        write_parquet(&source).await;
+        let destination = temp_dir.path().join("destination.lance");
+        create_job(&store, &source, &destination).await;
+        let claimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
+
+        run_claimed_job(&store, claimed).await;
+
+        let job = store.list_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(job.progress.rows_written, 3);
+        assert_eq!(job.progress.rows_total, 3);
+        assert!(job.error_reasons.is_empty());
+    }
+
+    #[tokio::test]
     async fn conversion_failure_returns_job_to_queue() {
         let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("empty-source");
         tokio::fs::create_dir(&source).await.unwrap();
         let destination = temp_dir.path().join("destination.lance");
+        create_job(&store, &source, &destination).await;
+        let claimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
+
+        run_claimed_job(&store, claimed).await;
+
+        let job = store.list_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, JobStatus::Queuing);
+        assert_eq!(job.error_reasons.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn expired_job_is_reclaimed_after_previous_worker_dies() {
+        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        tokio::fs::create_dir(&source).await.unwrap();
+        write_parquet(&source).await;
+        let destination = temp_dir.path().join("destination.lance");
+        create_job(&store, &source, &destination).await;
+
+        let abandoned = store.claim_jobs(1, 1).await.unwrap().remove(0);
+        assert_eq!(abandoned.job.attempt, 1);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let reclaimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
+        assert_eq!(reclaimed.job.attempt, 2);
+        assert_eq!(reclaimed.job.error_reasons.len(), 1);
+        assert_eq!(
+            reclaimed.job.error_reasons[0].reason,
+            "lease expired before completion"
+        );
+
+        run_claimed_job(&store, reclaimed).await;
+
+        let job = store.list_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(job.attempt, 2);
+        assert_eq!(job.progress.rows_written, 3);
+    }
+
+    async fn create_job(
+        store: &SqliteJobStore,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) {
         store
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
@@ -163,20 +234,35 @@ mod tests {
             })
             .await
             .unwrap();
-        let claimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
+    }
+
+    async fn run_claimed_job(store: &Arc<SqliteJobStore>, claimed: ClaimedJob) {
         let config = Arc::new(Config::parse_from(["lance-reconciler"]));
         let converter = Arc::new(Converter::new(ConverterConfig {
             target_lance_file_size_mib: config.target_lance_file_size_mib.get(),
             blob_inline_threshold_mib: config.blob_inline_threshold_mib.get(),
         }));
         let trait_store: Arc<dyn JobStore> = store.clone();
-
         run_job(claimed, trait_store, converter, config, 60_000)
             .await
             .unwrap();
+    }
 
-        let job = store.list_jobs(1).await.unwrap().remove(0);
-        assert_eq!(job.status, JobStatus::Queuing);
-        assert_eq!(job.error_reasons.len(), 1);
+    async fn write_parquet(directory: &std::path::Path) {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int64,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        tokio::fs::write(directory.join("part.parquet"), writer.into_inner().unwrap())
+            .await
+            .unwrap();
     }
 }

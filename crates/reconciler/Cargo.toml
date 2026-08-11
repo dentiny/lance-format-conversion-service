@@ -20,5 +20,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
+datafusion.workspace = true
 lance-job-store-sqlite.workspace = true
 tempfile.workspace = true

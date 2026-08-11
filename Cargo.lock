@@ -3212,6 +3212,7 @@ name = "lance-reconciler"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "datafusion",
  "lance-conversion-core",
  "lance-converter",
  "lance-job-store",
