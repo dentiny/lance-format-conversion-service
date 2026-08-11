@@ -18,7 +18,7 @@ The foundational control plane currently includes:
 - Object-safe `JobStore` interface
 - SQLite implementation with an embedded schema, WAL, and busy timeout
 - Atomic lease claims, 15-minute lease representation, attempt-based fencing, and progress snapshots
-- Active destination reservation
+- Destination URI as the permanent job primary key
 - a separate `lance-reconciler` process, which initializes storage but does not
   claim work
 
@@ -117,7 +117,6 @@ S3 sources.
 - `GET /healthz`
 - `POST /v1/jobs`
 - `GET /v1/jobs`
-- `GET /v1/jobs/{id}`
 
 Example job request:
 

@@ -1,22 +1,17 @@
 use async_trait::async_trait;
 use thiserror::Error;
-use uuid::Uuid;
 
 use lance_conversion_core::job::{ClaimedJob, Job, LeaseUpdate, NewJob, ProgressUpdate};
 
 /// Persists jobs and coordinates lease-based conversion execution.
 #[async_trait]
 pub trait JobStore: Send + Sync {
-    /// Persists and returns a new job in the queuing state with attempt zero,
-    /// no lease, empty error history, and zero progress.
-    async fn create_job(&self, job: NewJob) -> Result<Job, StoreError>;
-
-    /// Returns a job by its unique identifier, or [`StoreError::NotFound`] when
-    /// no matching row exists.
-    async fn get_job(&self, id: Uuid) -> Result<Job, StoreError>;
+    /// Persists a new job in the queuing state with attempt zero, no lease,
+    /// empty error history, and zero progress.
+    async fn create_job(&self, job: NewJob) -> Result<(), StoreError>;
 
     /// Returns at most `limit` jobs ordered by creation time from newest to
-    /// oldest, with job ID descending as the deterministic tie-breaker.
+    /// oldest, with destination URI descending as the deterministic tie-breaker.
     ///
     /// A zero limit returns an empty list. This method always starts from the
     /// newest job and does not provide pagination.
@@ -24,10 +19,11 @@ pub trait JobStore: Send + Sync {
 
     /// Atomically claims at most `limit` queuing or lease-expired running jobs.
     ///
-    /// Jobs are claimed from oldest to newest, with job ID as the deterministic
-    /// tie-breaker. Claiming sets the status to running, increments the attempt,
-    /// and sets the lease expiration relative to the store's current time.
-    /// A zero limit or non-positive lease duration returns an empty list.
+    /// Jobs are claimed from oldest to newest, with destination URI as the
+    /// deterministic tie-breaker. Claiming sets the status to running,
+    /// increments the attempt, and sets the lease expiration relative to the
+    /// store's current time. A zero limit or non-positive lease duration
+    /// returns an empty list.
     async fn claim_jobs(
         &self,
         limit: usize,

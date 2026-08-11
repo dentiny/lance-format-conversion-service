@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior, params, types::Type,
 };
-use uuid::Uuid;
 
 use lance_conversion_core::job::{
     ClaimedJob, Job, JobError, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate,
@@ -19,8 +18,7 @@ use lance_job_store::{JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const INITIAL_ATTEMPT: u32 = 0;
-const JOB_COLUMNS: &str = "id, creator, kind, source_uri, destination_uri, \
+const JOB_COLUMNS: &str = "creator, kind, source_uri, destination_uri, \
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json, \
     lease_expiration_timestamp_ms, source_bytes_read, lance_bytes_written, rows_read, \
     rows_written, rows_total, work_units_completed, work_units_total";
@@ -124,49 +122,30 @@ impl Clock for SystemClock {
 
 #[async_trait]
 impl JobStore for SqliteJobStore {
-    async fn create_job(&self, job: NewJob) -> Result<Job, StoreError> {
+    async fn create_job(&self, job: NewJob) -> Result<(), StoreError> {
         self.run(move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(database_error)?;
-            let created_job = Job {
-                id: Uuid::new_v4(),
-                creator: job.creator,
-                kind: job.kind,
-                source_uri: job.source.uri().to_owned(),
-                destination_uri: job.destination.uri().to_owned(),
-                status: JobStatus::Queuing,
-                creation_timestamp_ms: job.creation_timestamp_ms,
-                update_timestamp_ms: job.creation_timestamp_ms,
-                attempt: INITIAL_ATTEMPT,
-                error_reasons: Vec::new(),
-                lease_expiration_timestamp_ms: None,
-                progress: JobProgress::default(),
-            };
             transaction
                 .execute(
                     "INSERT INTO jobs(
-                        id, creator, kind, source_uri, destination_uri, status,
+                        creator, kind, source_uri, destination_uri, status,
                         creation_timestamp_ms, update_timestamp_ms
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, 'queuing', ?6, ?6)",
+                    ) VALUES (?1, ?2, ?3, ?4, 'queuing', ?5, ?5)",
                     params![
-                        created_job.id.to_string(),
-                        created_job.creator,
-                        created_job.kind.to_string(),
-                        created_job.source_uri,
-                        created_job.destination_uri,
-                        created_job.creation_timestamp_ms,
+                        job.creator,
+                        job.kind.to_string(),
+                        job.source.uri(),
+                        job.destination.uri(),
+                        job.creation_timestamp_ms,
                     ],
                 )
                 .map_err(job_insert_error)?;
             transaction.commit().map_err(database_error)?;
-            Ok(created_job)
+            Ok(())
         })
         .await
-    }
-
-    async fn get_job(&self, id: Uuid) -> Result<Job, StoreError> {
-        self.run(move |connection| get_job(connection, id)).await
     }
 
     async fn list_jobs(&self, limit: usize) -> Result<Vec<Job>, StoreError> {
@@ -175,7 +154,9 @@ impl JobStore for SqliteJobStore {
                 return Ok(Vec::new());
             }
             let sql = format!(
-                "SELECT {JOB_COLUMNS} FROM jobs ORDER BY creation_timestamp_ms DESC, id DESC LIMIT ?1"
+                "SELECT {JOB_COLUMNS} FROM jobs
+                 ORDER BY creation_timestamp_ms DESC, destination_uri DESC
+                 LIMIT ?1"
             );
             let mut statement = connection.prepare(&sql).map_err(database_error)?;
             let rows = statement
@@ -203,13 +184,13 @@ impl JobStore for SqliteJobStore {
             let lease_expiration_timestamp_ms = now_ms
                 .checked_add(lease_duration_ms)
                 .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
-            let ids = {
+            let destinations = {
                 let mut statement = transaction
                     .prepare(
-                        "SELECT id FROM jobs
+                        "SELECT destination_uri FROM jobs
                          WHERE status = 'queuing'
                             OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
-                         ORDER BY creation_timestamp_ms, id
+                         ORDER BY creation_timestamp_ms, destination_uri
                          LIMIT ?2",
                     )
                     .map_err(database_error)?;
@@ -222,8 +203,8 @@ impl JobStore for SqliteJobStore {
                     .map_err(database_error)?
             };
 
-            let mut claimed = Vec::with_capacity(ids.len());
-            for id in ids {
+            let mut claimed = Vec::with_capacity(destinations.len());
+            for destination_uri in destinations {
                 transaction
                     .execute(
                         "UPDATE jobs
@@ -231,12 +212,11 @@ impl JobStore for SqliteJobStore {
                              lease_expiration_timestamp_ms = ?2,
                              attempt = attempt + 1,
                              update_timestamp_ms = ?3
-                         WHERE id = ?1",
-                        params![id, lease_expiration_timestamp_ms, now_ms],
+                         WHERE destination_uri = ?1",
+                        params![destination_uri, lease_expiration_timestamp_ms, now_ms],
                     )
                     .map_err(database_error)?;
-                let job_id = parse_uuid(&id, 0).map_err(database_error)?;
-                let job = get_job(&transaction, job_id)?;
+                let job = load_job(&transaction, &destination_uri)?;
                 claimed.push(ClaimedJob { job });
             }
             transaction.commit().map_err(database_error)?;
@@ -259,7 +239,7 @@ impl JobStore for SqliteJobStore {
             let now_ms = clock.now_ms()?;
             validate_progress_update(
                 &transaction,
-                update.job_id,
+                &update.destination_uri,
                 update.attempt,
                 now_ms,
                 update.progress,
@@ -280,12 +260,12 @@ impl JobStore for SqliteJobStore {
                          rows_total = ?9,
                          work_units_completed = ?10,
                          work_units_total = ?11
-                     WHERE id = ?1
+                     WHERE destination_uri = ?1
                        AND status = 'running'
                        AND attempt = ?2
                        AND lease_expiration_timestamp_ms > ?4",
                     params![
-                        update.job_id.to_string(),
+                        &update.destination_uri,
                         i64::from(update.attempt),
                         lease_expiration_timestamp_ms,
                         now_ms,
@@ -302,7 +282,7 @@ impl JobStore for SqliteJobStore {
             if changed == 0 {
                 return Err(StoreError::LeaseLost);
             }
-            let job = get_job(&transaction, update.job_id)?;
+            let job = load_job(&transaction, &update.destination_uri)?;
             transaction.commit().map_err(database_error)?;
             Ok(job)
         })
@@ -318,7 +298,7 @@ impl JobStore for SqliteJobStore {
             let now_ms = clock.now_ms()?;
             validate_progress_update(
                 &transaction,
-                update.job_id,
+                &update.destination_uri,
                 update.attempt,
                 now_ms,
                 update.progress,
@@ -335,12 +315,12 @@ impl JobStore for SqliteJobStore {
                          rows_total = ?8,
                          work_units_completed = ?9,
                          work_units_total = ?10
-                     WHERE id = ?1
+                     WHERE destination_uri = ?1
                        AND status = 'running'
                        AND attempt = ?2
                        AND lease_expiration_timestamp_ms > ?3",
                     params![
-                        update.job_id.to_string(),
+                        &update.destination_uri,
                         i64::from(update.attempt),
                         now_ms,
                         progress.source_bytes_read,
@@ -356,7 +336,7 @@ impl JobStore for SqliteJobStore {
             if changed == 0 {
                 return Err(StoreError::LeaseLost);
             }
-            let job = get_job(&transaction, update.job_id)?;
+            let job = load_job(&transaction, &update.destination_uri)?;
             transaction.commit().map_err(database_error)?;
             Ok(job)
         })
@@ -366,12 +346,12 @@ impl JobStore for SqliteJobStore {
 
 fn validate_progress_update(
     connection: &Connection,
-    job_id: Uuid,
+    destination_uri: &str,
     attempt: u32,
     now_ms: i64,
     incoming: JobProgress,
 ) -> Result<(), StoreError> {
-    let job = get_job(connection, job_id)?;
+    let job = load_job(connection, destination_uri)?;
     if job.status != JobStatus::Running
         || job.attempt != attempt
         || job
@@ -395,44 +375,39 @@ fn validate_progress_update(
     Ok(())
 }
 
-fn get_job(connection: &Connection, id: Uuid) -> Result<Job, StoreError> {
-    let sql = format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?1");
+fn load_job(connection: &Connection, destination_uri: &str) -> Result<Job, StoreError> {
+    let sql = format!("SELECT {JOB_COLUMNS} FROM jobs WHERE destination_uri = ?1");
     connection
-        .query_row(&sql, [id.to_string()], row_to_job)
+        .query_row(&sql, [destination_uri], row_to_job)
         .optional()
         .map_err(database_error)?
         .ok_or(StoreError::NotFound)
 }
 
 fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
-    let error_reasons = serde_json::from_str::<Vec<JobError>>(&row.get::<_, String>(9)?)
-        .map_err(|error| conversion_error(9, Type::Text, error))?;
+    let error_reasons = serde_json::from_str::<Vec<JobError>>(&row.get::<_, String>(8)?)
+        .map_err(|error| conversion_error(8, Type::Text, error))?;
     Ok(Job {
-        id: parse_uuid(&row.get::<_, String>(0)?, 0)?,
-        creator: row.get(1)?,
-        kind: parse_value(&row.get::<_, String>(2)?, 2)?,
-        source_uri: row.get(3)?,
-        destination_uri: row.get(4)?,
-        status: parse_value(&row.get::<_, String>(5)?, 5)?,
-        creation_timestamp_ms: row.get(6)?,
-        update_timestamp_ms: row.get(7)?,
-        attempt: i64_to_u32(row.get(8)?, 8)?,
+        creator: row.get(0)?,
+        kind: parse_value(&row.get::<_, String>(1)?, 1)?,
+        source_uri: row.get(2)?,
+        destination_uri: row.get(3)?,
+        status: parse_value(&row.get::<_, String>(4)?, 4)?,
+        creation_timestamp_ms: row.get(5)?,
+        update_timestamp_ms: row.get(6)?,
+        attempt: i64_to_u32(row.get(7)?, 7)?,
         error_reasons,
-        lease_expiration_timestamp_ms: row.get(10)?,
+        lease_expiration_timestamp_ms: row.get(9)?,
         progress: JobProgress {
-            source_bytes_read: i64_to_u64(row.get(11)?, 11)?,
-            lance_bytes_written: i64_to_u64(row.get(12)?, 12)?,
-            rows_read: i64_to_u64(row.get(13)?, 13)?,
-            rows_written: i64_to_u64(row.get(14)?, 14)?,
-            rows_total: i64_to_u64(row.get(15)?, 15)?,
-            work_units_completed: i64_to_u64(row.get(16)?, 16)?,
-            work_units_total: i64_to_u64(row.get(17)?, 17)?,
+            source_bytes_read: i64_to_u64(row.get(10)?, 10)?,
+            lance_bytes_written: i64_to_u64(row.get(11)?, 11)?,
+            rows_read: i64_to_u64(row.get(12)?, 12)?,
+            rows_written: i64_to_u64(row.get(13)?, 13)?,
+            rows_total: i64_to_u64(row.get(14)?, 14)?,
+            work_units_completed: i64_to_u64(row.get(15)?, 15)?,
+            work_units_total: i64_to_u64(row.get(16)?, 16)?,
         },
     })
-}
-
-fn parse_uuid(value: &str, index: usize) -> rusqlite::Result<Uuid> {
-    Uuid::parse_str(value).map_err(|error| conversion_error(index, Type::Text, error))
 }
 
 fn parse_value<T>(value: &str, index: usize) -> rusqlite::Result<T>
@@ -493,7 +468,7 @@ fn database_error(error: rusqlite::Error) -> StoreError {
 
 fn job_insert_error(error: rusqlite::Error) -> StoreError {
     if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation) {
-        StoreError::Conflict("destination is already reserved by an active job".to_owned())
+        StoreError::Conflict("destination already has a job".to_owned())
     } else {
         database_error(error)
     }
@@ -542,7 +517,7 @@ mod tests {
         let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
             .await
             .unwrap();
-        let job = store
+        store
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
                 source: source("s3://source-bucket/data"),
@@ -556,13 +531,13 @@ mod tests {
 
         let first_claim = store.claim_jobs(1, 100).await.unwrap();
         assert_eq!(first_claim.len(), 1);
-        assert_eq!(first_claim[0].job.id, job.id);
+        let destination_uri = first_claim[0].job.destination_uri.clone();
         assert_eq!(first_claim[0].job.attempt, 1);
 
         clock.set(111);
         let expired_error = store
             .renew_lease(LeaseUpdate {
-                job_id: job.id,
+                destination_uri: destination_uri.clone(),
                 attempt: first_claim[0].job.attempt,
                 lease_duration_ms: 100,
                 progress: JobProgress::default(),
@@ -578,7 +553,7 @@ mod tests {
         clock.set(112);
         let error = store
             .renew_lease(LeaseUpdate {
-                job_id: job.id,
+                destination_uri,
                 attempt: first_claim[0].job.attempt,
                 lease_duration_ms: 188,
                 progress: JobProgress::default(),
@@ -594,7 +569,7 @@ mod tests {
         let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
             .await
             .unwrap();
-        let job = store
+        store
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
                 source: source("/datasets/source"),
@@ -606,6 +581,7 @@ mod tests {
             .await
             .unwrap();
         let claim = store.claim_jobs(1, 1_000).await.unwrap().remove(0);
+        let destination_uri = claim.job.destination_uri.clone();
 
         let progress = JobProgress {
             source_bytes_read: 100,
@@ -619,7 +595,7 @@ mod tests {
         clock.set(20);
         let checkpointed = store
             .checkpoint_progress(ProgressUpdate {
-                job_id: job.id,
+                destination_uri: destination_uri.clone(),
                 attempt: claim.job.attempt,
                 progress,
             })
@@ -630,7 +606,7 @@ mod tests {
         clock.set(21);
         let updated = store
             .renew_lease(LeaseUpdate {
-                job_id: job.id,
+                destination_uri: destination_uri.clone(),
                 attempt: claim.job.attempt,
                 lease_duration_ms: 1_979,
                 progress: JobProgress::default(),
@@ -643,7 +619,7 @@ mod tests {
         clock.set(22);
         let error = store
             .checkpoint_progress(ProgressUpdate {
-                job_id: job.id,
+                destination_uri,
                 attempt: claim.job.attempt,
                 progress: JobProgress {
                     work_units_completed: 3,
@@ -656,9 +632,10 @@ mod tests {
         assert!(matches!(error, StoreError::InvalidInput(_)));
         assert_eq!(
             store
-                .get_job(job.id)
+                .list_jobs(1)
                 .await
                 .unwrap()
+                .remove(0)
                 .progress
                 .work_units_completed,
             0
@@ -675,7 +652,7 @@ mod tests {
         let second = SqliteJobStore::open_with_clock(&path, clock.clone())
             .await
             .unwrap();
-        let job = first
+        first
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
                 source: source("/datasets/source"),
@@ -689,10 +666,11 @@ mod tests {
             .await
             .unwrap();
         let claim = first.claim_jobs(1, 1_000).await.unwrap().remove(0);
+        let destination_uri = claim.job.destination_uri.clone();
 
         clock.set(20);
         let completed_update = first.checkpoint_progress(ProgressUpdate {
-            job_id: job.id,
+            destination_uri: destination_uri.clone(),
             attempt: claim.job.attempt,
             progress: JobProgress {
                 work_units_completed: 10,
@@ -701,7 +679,7 @@ mod tests {
             },
         });
         let total_update = second.checkpoint_progress(ProgressUpdate {
-            job_id: job.id,
+            destination_uri,
             attempt: claim.job.attempt,
             progress: JobProgress {
                 work_units_completed: 0,
@@ -713,7 +691,7 @@ mod tests {
         completed_result.unwrap();
         total_result.unwrap();
 
-        let progress = first.get_job(job.id).await.unwrap().progress;
+        let progress = first.list_jobs(1).await.unwrap().remove(0).progress;
         assert!(
             progress.work_units_total == 0
                 || progress.work_units_completed <= progress.work_units_total

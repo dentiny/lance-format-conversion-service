@@ -57,13 +57,19 @@ impl Config {
     /// inline threshold exceeds the target Lance file size.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.lease_renew_interval_secs >= self.lease_duration_secs {
-            return Err(ConfigError::LeaseRenewalNotShorter);
+            return Err(ConfigError::InvalidInput(
+                "lease renewal interval must be shorter than lease duration",
+            ));
         }
         if self.progress_interval_secs > self.lease_renew_interval_secs {
-            return Err(ConfigError::ProgressSlowerThanLeaseRenewal);
+            return Err(ConfigError::InvalidInput(
+                "progress interval must not be longer than lease renewal interval",
+            ));
         }
         if self.blob_inline_threshold_mib > self.target_lance_file_size_mib {
-            return Err(ConfigError::BlobThresholdExceedsFileSize);
+            return Err(ConfigError::InvalidInput(
+                "blob inline threshold must not exceed the target Lance file size",
+            ));
         }
         Ok(())
     }
@@ -71,10 +77,6 @@ impl Config {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
-    #[error("lease renewal interval must be shorter than lease duration")]
-    LeaseRenewalNotShorter,
-    #[error("progress interval must not be longer than lease renewal interval")]
-    ProgressSlowerThanLeaseRenewal,
-    #[error("blob inline threshold must not exceed the target Lance file size")]
-    BlobThresholdExceedsFileSize,
+    #[error("invalid configuration: {0}")]
+    InvalidInput(&'static str),
 }

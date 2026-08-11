@@ -309,7 +309,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror",
- "uuid",
 ]
 
 [[package]]
@@ -319,7 +318,6 @@ dependencies = [
  "async-trait",
  "lance-conversion-core",
  "thiserror",
- "uuid",
 ]
 
 [[package]]
@@ -369,7 +367,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
- "uuid",
 ]
 
 [[package]]

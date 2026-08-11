@@ -1,7 +1,6 @@
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::location::DatasetLocation;
 
@@ -48,7 +47,6 @@ string_enum!(JobStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
-    pub id: Uuid,
     pub creator: String,
     pub kind: JobKind,
     pub source_uri: String,
@@ -96,7 +94,7 @@ pub struct ClaimedJob {
 
 #[derive(Debug, Clone)]
 pub struct LeaseUpdate {
-    pub job_id: Uuid,
+    pub destination_uri: String,
     pub attempt: u32,
     pub lease_duration_ms: i64,
     pub progress: JobProgress,
@@ -104,7 +102,7 @@ pub struct LeaseUpdate {
 
 #[derive(Debug, Clone)]
 pub struct ProgressUpdate {
-    pub job_id: Uuid,
+    pub destination_uri: String,
     pub attempt: u32,
     pub progress: JobProgress,
 }

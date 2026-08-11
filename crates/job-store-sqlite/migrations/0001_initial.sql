@@ -1,10 +1,9 @@
 CREATE TABLE IF NOT EXISTS jobs (
     -- Job identity and conversion request.
-    id TEXT PRIMARY KEY,
     creator TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('copy', 'move')),
     source_uri TEXT NOT NULL,
-    destination_uri TEXT NOT NULL,
+    destination_uri TEXT PRIMARY KEY,
 
     -- Job lifecycle.
     status TEXT NOT NULL CHECK (
@@ -50,12 +49,12 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 -- Query pattern: claim the oldest queuing jobs in creation order.
 CREATE INDEX IF NOT EXISTS jobs_queuing_idx
-    ON jobs(creation_timestamp_ms, id)
+    ON jobs(creation_timestamp_ms, destination_uri)
     WHERE status = 'queuing';
 
 -- Query pattern: reclaim running jobs whose lease has expired.
 CREATE INDEX IF NOT EXISTS jobs_expired_running_idx
-    ON jobs(lease_expiration_timestamp_ms, creation_timestamp_ms, id)
+    ON jobs(lease_expiration_timestamp_ms, creation_timestamp_ms, destination_uri)
     WHERE status = 'running';
 
 -- Query pattern: filter jobs by creator.
@@ -64,14 +63,9 @@ CREATE INDEX IF NOT EXISTS jobs_creator_idx
 
 -- Query pattern: list all jobs from newest to oldest.
 CREATE INDEX IF NOT EXISTS jobs_creation_idx
-    ON jobs(creation_timestamp_ms DESC, id DESC);
+    ON jobs(creation_timestamp_ms DESC, destination_uri DESC);
 
 -- Query pattern: list one creator's failed jobs from newest to oldest.
 CREATE INDEX IF NOT EXISTS jobs_creator_failed_idx
-    ON jobs(creator, creation_timestamp_ms DESC, id DESC)
+    ON jobs(creator, creation_timestamp_ms DESC, destination_uri DESC)
     WHERE status = 'failed';
-
--- Constraint pattern: prevent two active jobs from writing the same destination.
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_destination_idx
-    ON jobs(destination_uri)
-    WHERE status IN ('queuing', 'running');

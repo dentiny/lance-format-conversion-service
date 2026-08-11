@@ -7,14 +7,13 @@ pub mod config;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
 use lance_conversion_core::{
     job::{Job, JobKind, NewJob},
@@ -33,7 +32,6 @@ pub fn router(store: Arc<dyn JobStore>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/jobs", post(create_job).get(list_jobs))
-        .route("/v1/jobs/{id}", get(get_job))
         .with_state(AppState { store })
 }
 
@@ -57,12 +55,12 @@ struct CreateJobRequest {
 async fn create_job(
     State(state): State<AppState>,
     Json(request): Json<CreateJobRequest>,
-) -> Result<(StatusCode, Json<Job>), ApiError> {
+) -> Result<StatusCode, ApiError> {
     let source = DatasetLocation::parse_location(request.source_uri)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let destination = DatasetLocation::parse_location(request.destination_uri)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-    let job = state
+    state
         .store
         .create_job(NewJob {
             creator: request.creator,
@@ -72,14 +70,7 @@ async fn create_job(
             creation_timestamp_ms: now_ms()?,
         })
         .await?;
-    Ok((StatusCode::ACCEPTED, Json(job)))
-}
-
-async fn get_job(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Job>, ApiError> {
-    Ok(Json(state.store.get_job(id).await?))
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<Job>>, ApiError> {
@@ -112,14 +103,17 @@ struct ErrorBody {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::Store(StoreError::InvalidInput(_)) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Store(StoreError::NotFound) => StatusCode::NOT_FOUND,
             Self::Store(
-                StoreError::LeaseLost | StoreError::InvalidInput(_) | StoreError::Conflict(_),
-            ) => StatusCode::CONFLICT,
-            Self::Store(StoreError::Database(_) | StoreError::Worker(_)) | Self::Internal(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+                StoreError::LeaseLost
+                | StoreError::Conflict(_)
+                | StoreError::Database(_)
+                | StoreError::Worker(_),
+            )
+            | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
             "internal server error".to_owned()
@@ -141,7 +135,6 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use lance_conversion_core::job::Job;
     use lance_job_store::StoreError;
     use lance_job_store_sqlite::SqliteJobStore;
 
@@ -180,11 +173,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let job: Job =
-            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
-                .unwrap();
-        assert_eq!(job.creator, "test-user");
-        assert_eq!(job.source_uri, "s3://source-bucket/data");
     }
 
     #[tokio::test]
