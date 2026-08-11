@@ -18,7 +18,6 @@ use lance_conversion_core::job::{
 use lance_job_store::{JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
-const JOB_SPECS_MIGRATION: &str = include_str!("../migrations/0002_job_specs.sql");
 const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
 const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -84,7 +83,10 @@ impl SqliteJobStore {
             .connect_with(options)
             .await
             .map_err(database_error)?;
-        apply_migrations(&pool).await?;
+        sqlx::raw_sql(INITIAL_MIGRATION)
+            .execute(&pool)
+            .await
+            .map_err(database_error)?;
 
         Ok(Self { pool, clock })
     }
@@ -100,41 +102,6 @@ impl SqliteJobStore {
     pub(super) async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
         let mut connection = self.pool.acquire().await.map_err(database_error)?;
         load_job(&mut connection, destination_uri).await
-    }
-}
-
-async fn apply_migrations(pool: &SqlitePool) -> Result<(), StoreError> {
-    sqlx::raw_sql(INITIAL_MIGRATION)
-        .execute(pool)
-        .await
-        .map_err(database_error)?;
-
-    let columns = sqlx::query("PRAGMA table_info(jobs)")
-        .fetch_all(pool)
-        .await
-        .map_err(database_error)?;
-    let has_blob_columns = columns.iter().any(|row| {
-        row.try_get::<String, _>("name")
-            .is_ok_and(|name| name == BLOB_COLUMNS_JSON_COLUMN)
-    });
-    let has_indices = columns.iter().any(|row| {
-        row.try_get::<String, _>("name")
-            .is_ok_and(|name| name == INDICES_JSON_COLUMN)
-    });
-
-    match (has_blob_columns, has_indices) {
-        (true, true) => Ok(()),
-        (false, false) => {
-            let mut transaction = pool.begin().await.map_err(database_error)?;
-            sqlx::raw_sql(JOB_SPECS_MIGRATION)
-                .execute(&mut *transaction)
-                .await
-                .map_err(database_error)?;
-            transaction.commit().await.map_err(database_error)
-        }
-        _ => Err(StoreError::Database(
-            "job specification migration is partially applied".to_owned(),
-        )),
     }
 }
 

@@ -68,7 +68,7 @@ async fn created_job_can_be_listed() {
 }
 
 #[tokio::test]
-async fn blob_and_index_specs_round_trip() {
+async fn blob_and_index_specs_round_trip_through_store() {
     let store = SqliteJobStore::open(":memory:").await.unwrap();
     let destination_uri = "s3://destination-bucket/specs.lance";
     let blob_columns = vec![BlobColumnSpec {
@@ -101,33 +101,6 @@ async fn blob_and_index_specs_round_trip() {
     let job = store.get_job(destination_uri).await.unwrap();
     assert_eq!(job.blob_columns, blob_columns);
     assert_eq!(job.indices, indices);
-}
-
-#[tokio::test]
-async fn existing_database_is_migrated_with_empty_specs() {
-    let database = tempfile::NamedTempFile::new().unwrap();
-    let pool = sqlx::SqlitePool::connect(database.path().to_str().unwrap())
-        .await
-        .unwrap();
-    sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO jobs(
-            creator, kind, source_uri, destination_uri, status,
-            creation_timestamp_ms, update_timestamp_ms
-         ) VALUES ('test-user', 'copy', '/source', '/destination', 'queuing', 1, 1)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    pool.close().await;
-
-    let store = SqliteJobStore::open(database.path()).await.unwrap();
-    let job = store.get_job("/destination").await.unwrap();
-    assert!(job.blob_columns.is_empty());
-    assert!(job.indices.is_empty());
 }
 
 #[tokio::test]

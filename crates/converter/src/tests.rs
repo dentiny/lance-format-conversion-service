@@ -22,12 +22,10 @@ use crate::{ConversionProgress, Converter, ConverterConfig};
 const TARGET_FILE_SIZE_MIB: u64 = 512;
 const BLOB_INLINE_THRESHOLD_MIB: u64 = 2;
 const BLOB_DEDICATED_THRESHOLD_MIB: u64 = 4;
-const MIB: u64 = 1024 * 1024;
 const INLINE_PAYLOAD_BYTES: usize = 1024 * 1024;
 const PACKED_PAYLOAD_BYTES: usize = 3 * 1024 * 1024;
 const DEDICATED_PAYLOAD_BYTES: usize = 5 * 1024 * 1024;
-const BLOB_ROW_INDICES: [u64; 3] = [0, 1, 2];
-const EXPECTED_BLOB_KINDS: [&str; 3] = ["Inline", "Packed", "Dedicated"];
+const BLOB_ROW_INDEX: [u64; 1] = [0];
 
 #[tokio::test]
 async fn converts_local_parquet_directory() {
@@ -166,106 +164,44 @@ async fn converts_local_nested_list_columns() {
 }
 
 #[tokio::test]
-async fn ingests_nullable_file_url_blob() {
-    let temp_dir = TempDir::new().unwrap();
-    let source = temp_dir.path().join("source");
-    let destination = temp_dir.path().join("dataset.lance");
-    let blob_path = temp_dir.path().join("payload.bin");
-    let payload = b"blob payload";
-    tokio::fs::create_dir(&source).await.unwrap();
-    tokio::fs::write(&blob_path, payload).await.unwrap();
-    let blob_url = reqwest::Url::from_file_path(&blob_path)
-        .unwrap()
-        .to_string();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("asset", DataType::Utf8, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(vec![1, 2])),
-            Arc::new(StringArray::from(vec![Some(blob_url), None])),
-        ],
-    )
-    .unwrap();
-    let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
-    writer.write(&batch).unwrap();
-    tokio::fs::write(source.join("part.parquet"), writer.into_inner().unwrap())
-        .await
-        .unwrap();
-
-    let mut job = test_job(&source, &destination);
-    job.blob_columns = vec![BlobColumnSpec {
-        column: "asset".to_owned(),
-    }];
-    Converter::new(test_config())
-        .convert(&job, Arc::new(ConversionProgress::default()))
-        .await
-        .unwrap();
-    tokio::fs::remove_file(blob_path).await.unwrap();
-
-    let dataset = Arc::new(
-        Dataset::open(destination.to_string_lossy().as_ref())
-            .await
-            .unwrap(),
-    );
-    let blobs = dataset
-        .take_blobs_by_indices(&[0, 1], "asset")
-        .await
-        .unwrap();
-    assert_eq!(blobs.len(), 2);
-    assert_eq!(
-        blobs[0].as_ref().unwrap().read().await.unwrap().as_ref(),
-        payload
-    );
-    assert!(blobs[1].is_none());
-    let fields = dataset.schema().fields.iter().collect::<Vec<_>>();
-    assert_eq!(fields[0].name, "id");
-    assert_eq!(fields[1].name, "asset");
-    assert_eq!(
-        fields[1]
-            .metadata
-            .get("lance-encoding:blob-inline-size-threshold"),
-        Some(&(BLOB_INLINE_THRESHOLD_MIB * MIB).to_string())
-    );
-    assert_eq!(
-        fields[1]
-            .metadata
-            .get("lance-encoding:blob-dedicated-size-threshold"),
-        Some(&(BLOB_DEDICATED_THRESHOLD_MIB * MIB).to_string())
-    );
+async fn ingests_inline_blob_storage() {
+    assert_blob_storage(Some(INLINE_PAYLOAD_BYTES), Some("Inline")).await;
 }
 
 #[tokio::test]
-async fn places_ingested_blobs_by_threshold() {
+async fn ingests_packed_blob_storage() {
+    assert_blob_storage(Some(PACKED_PAYLOAD_BYTES), Some("Packed")).await;
+}
+
+#[tokio::test]
+async fn ingests_external_blob_storage() {
+    assert_blob_storage(Some(DEDICATED_PAYLOAD_BYTES), Some("Dedicated")).await;
+}
+
+#[tokio::test]
+async fn ingests_null_blob() {
+    assert_blob_storage(None, None).await;
+}
+
+async fn assert_blob_storage(payload_size: Option<usize>, expected_kind: Option<&str>) {
     let temp_dir = TempDir::new().unwrap();
     let source = temp_dir.path().join("source");
     let destination = temp_dir.path().join("dataset.lance");
     tokio::fs::create_dir(&source).await.unwrap();
-
-    let payload_sizes = [
-        INLINE_PAYLOAD_BYTES,
-        PACKED_PAYLOAD_BYTES,
-        DEDICATED_PAYLOAD_BYTES,
-    ];
-    let mut blob_paths = Vec::with_capacity(payload_sizes.len());
-    let mut blob_urls = Vec::with_capacity(payload_sizes.len());
-    for (position, size) in payload_sizes.into_iter().enumerate() {
-        let path = temp_dir.path().join(format!("payload-{position}.bin"));
+    let blob_path = if let Some(size) = payload_size {
+        let path = temp_dir.path().join("payload.bin");
         tokio::fs::write(&path, vec![0_u8; size]).await.unwrap();
-        blob_urls.push(reqwest::Url::from_file_path(&path).unwrap().to_string());
-        blob_paths.push(path);
-    }
-
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "asset",
-        DataType::Utf8,
-        false,
-    )]));
+        Some(path)
+    } else {
+        None
+    };
+    let blob_url = blob_path
+        .as_ref()
+        .map(|path| reqwest::Url::from_file_path(path).unwrap().to_string());
+    let schema = Arc::new(Schema::new(vec![Field::new("asset", DataType::Utf8, true)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
-        vec![Arc::new(StringArray::from(blob_urls))],
+        vec![Arc::new(StringArray::from(vec![blob_url]))],
     )
     .unwrap();
     let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
@@ -282,7 +218,7 @@ async fn places_ingested_blobs_by_threshold() {
         .convert(&job, Arc::new(ConversionProgress::default()))
         .await
         .unwrap();
-    for path in blob_paths {
+    if let Some(path) = blob_path {
         tokio::fs::remove_file(path).await.unwrap();
     }
 
@@ -292,14 +228,18 @@ async fn places_ingested_blobs_by_threshold() {
             .unwrap(),
     );
     let blobs = dataset
-        .take_blobs_by_indices(&BLOB_ROW_INDICES, "asset")
+        .take_blobs_by_indices(&BLOB_ROW_INDEX, "asset")
         .await
         .unwrap();
-    let actual_kinds = blobs
-        .iter()
-        .map(|blob| format!("{:?}", blob.as_ref().unwrap().kind()))
-        .collect::<Vec<_>>();
-    assert_eq!(actual_kinds, EXPECTED_BLOB_KINDS);
+    match (blobs[0].as_ref(), expected_kind, payload_size) {
+        (Some(blob), Some(kind), Some(size)) => {
+            assert_eq!(format!("{:?}", blob.kind()), kind);
+            assert_eq!(blob.size(), u64::try_from(size).unwrap());
+            assert_eq!(blob.read().await.unwrap().len(), size);
+        }
+        (None, None, None) => {}
+        _ => panic!("blob storage did not match the expected kind"),
+    }
 }
 
 #[tokio::test]

@@ -5,6 +5,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     source_uri TEXT NOT NULL,
     destination_uri TEXT PRIMARY KEY,
 
+    -- User-selected conversion options.
+    blob_columns_json TEXT NOT NULL DEFAULT '[]' CHECK (
+        json_valid(blob_columns_json)
+        AND json_type(blob_columns_json) = 'array'
+    ),
+    indices_json TEXT NOT NULL DEFAULT '[]' CHECK (
+        json_valid(indices_json)
+        AND json_type(indices_json) = 'array'
+    ),
+
     -- Job lifecycle.
     status TEXT NOT NULL CHECK (
         status IN (
