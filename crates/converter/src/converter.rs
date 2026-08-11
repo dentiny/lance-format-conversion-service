@@ -9,8 +9,8 @@ use lance_conversion_core::{
 use lance_file::version::LanceFileVersion;
 
 use crate::{
-    ConversionError, ConversionProgress, ConverterConfig, destination::Destination, indexes,
-    schema, source, validation,
+    ConversionError, ConversionProgress, ConverterConfig, destination::Destination,
+    indexes::Indexes, schema, source, validation,
 };
 
 pub struct Converter {
@@ -105,7 +105,7 @@ impl Converter {
 
         let source_rows = progress.snapshot().rows_read;
         validation::validate_row_count(&destination, source_rows).await?;
-        indexes::create(&mut destination, &job.indices).await?;
+        Indexes::new(&job.indices).create(&mut destination).await?;
         progress.finish();
         if job.kind == JobKind::Move {
             source.delete().await?;

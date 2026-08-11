@@ -15,41 +15,48 @@ use crate::ConversionError;
 
 const MAX_PRODUCT_SUBVECTORS: usize = 16;
 
-pub(crate) async fn create(
-    dataset: &mut Dataset,
-    specs: &[IndexSpec],
-) -> Result<(), ConversionError> {
-    for (position, spec) in specs.iter().enumerate() {
-        let column = spec.columns.first().ok_or_else(|| {
-            ConversionError::InvalidIndexSpec(format!(
-                "{} index must specify at least one column",
-                spec.index_type
-            ))
-        })?;
-        let field = dataset.schema().field(column).ok_or_else(|| {
-            ConversionError::InvalidIndexSpec(format!(
-                "selected index column '{column}' does not exist"
-            ))
-        })?;
-        let (index_type, params) = mapping(spec.index_type, &field.data_type())?;
-        let columns = spec.columns.iter().map(String::as_str).collect::<Vec<_>>();
-        dataset
-            .create_index(
-                &columns,
-                index_type,
-                Some(format!("conversion_{position}_{}_idx", spec.index_type)),
-                params.as_ref(),
-                true,
-            )
-            .await
-            .map_err(|error| {
-                ConversionError::Index(format!(
-                    "{} index on column '{}': {error}",
-                    spec.index_type, column
+pub(crate) struct Indexes<'a> {
+    specs: &'a [IndexSpec],
+}
+
+impl<'a> Indexes<'a> {
+    pub(crate) const fn new(specs: &'a [IndexSpec]) -> Self {
+        Self { specs }
+    }
+
+    pub(crate) async fn create(self, dataset: &mut Dataset) -> Result<(), ConversionError> {
+        for (position, spec) in self.specs.iter().enumerate() {
+            let column = spec.columns.first().ok_or_else(|| {
+                ConversionError::InvalidIndexSpec(format!(
+                    "{} index must specify at least one column",
+                    spec.index_type
                 ))
             })?;
+            let field = dataset.schema().field(column).ok_or_else(|| {
+                ConversionError::InvalidIndexSpec(format!(
+                    "selected index column '{column}' does not exist"
+                ))
+            })?;
+            let (index_type, params) = mapping(spec.index_type, &field.data_type())?;
+            let columns = spec.columns.iter().map(String::as_str).collect::<Vec<_>>();
+            dataset
+                .create_index(
+                    &columns,
+                    index_type,
+                    Some(format!("conversion_{position}_{}_idx", spec.index_type)),
+                    params.as_ref(),
+                    true,
+                )
+                .await
+                .map_err(|error| {
+                    ConversionError::Index(format!(
+                        "{} index on column '{}': {error}",
+                        spec.index_type, column
+                    ))
+                })?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn vector_dimension(data_type: &DataType) -> Option<usize> {
@@ -177,11 +184,9 @@ fn vector_parameters(
             hnsw,
             SQBuildParams::default(),
         ),
-        JobIndexType::IvfRq => VectorIndexParams::with_ivf_rq_params(
-            DistanceType::L2,
-            ivf,
-            RQBuildParams::default(),
-        ),
+        JobIndexType::IvfRq => {
+            VectorIndexParams::with_ivf_rq_params(DistanceType::L2, ivf, RQBuildParams::default())
+        }
         _ => unreachable!("called only for vector index types"),
     };
     Ok(Box::new(params))
