@@ -1,0 +1,16 @@
+[package]
+name = "lance-job-store"
+description = "Storage abstraction for Lance conversion jobs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+lance-conversion-core.workspace = true
+thiserror.workspace = true

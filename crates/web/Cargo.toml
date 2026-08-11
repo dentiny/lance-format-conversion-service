@@ -1,0 +1,26 @@
+[package]
+name = "lance-web"
+description = "HTTP control plane for Lance format conversion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+clap.workspace = true
+lance-conversion-core.workspace = true
+lance-job-store.workspace = true
+lance-job-store-factory.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+
+[dev-dependencies]
+lance-job-store-sqlite.workspace = true
+serde_json.workspace = true
+tower.workspace = true
