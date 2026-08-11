@@ -16,7 +16,7 @@ The service currently includes:
 - Typed NFS, S3, and Hugging Face location classification
 - `copy` and `move` job contracts
 - Object-safe `JobStore` interface
-- SQLite implementation with an embedded schema, WAL, and busy timeout
+- Async SQLx SQLite implementation with an embedded schema, WAL, and busy timeout
 - Atomic lease claims, 15-minute lease representation, attempt-based fencing, and progress snapshots
 - Destination URI as the permanent job primary key
 - Stateless Arrow schema validation before each write
