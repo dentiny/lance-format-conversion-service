@@ -38,8 +38,8 @@ lance-job-store-factory = { path = "crates/job-store-factory" }
 lance-job-store-sqlite = { path = "crates/job-store-sqlite" }
 lance-file = { version = "10.0", default-features = false }
 lance-table = { version = "10.0", default-features = false }
-object_store = { version = "0.13", default-features = false, features = ["aws"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "stream"] }
+object_store = { version = "0.13", default-features = false, features = ["aws", "http"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }

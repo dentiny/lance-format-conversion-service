@@ -21,7 +21,7 @@ The service currently includes:
 - Destination URI as the permanent job primary key
 - Stateless Arrow schema validation before each write
 - Parquet-directory readers for NFS and AWS S3
-- Hugging Face dataset Parquet discovery and download
+- Hugging Face dataset Parquet discovery and direct HTTP streaming
 - Lance 2.3 overwrite writes with a configurable soft file-size target
 - Blob V2 inline-threshold metadata for columns already marked as Blob V2
 
@@ -52,6 +52,9 @@ the job store but does not claim or execute jobs.
   attempts.
 - Add parallel Lance fragment writers for large datasets. The initial
   implementation deliberately uses one sequential writer per conversion job.
+- Preserve bounded end-to-end backpressure between source readers and Lance
+  writers, including parallel writers, so remote reads cannot outrun writes,
+  accumulate unbounded record batches, and cause an out-of-memory failure.
 - Add durable conversion checkpoints and idempotent fragment commits so a
   worker that reclaims an interrupted job can resume from its last committed
   checkpoint instead of restarting the overwrite from the beginning.

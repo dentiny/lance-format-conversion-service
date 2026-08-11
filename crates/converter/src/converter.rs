@@ -4,7 +4,7 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance_conversion_core::{
     job::{Job, JobKind, JobProgress},
-    location::{DatasetLocation, LocationKind},
+    location::DatasetLocation,
 };
 use lance_file::version::LanceFileVersion;
 
@@ -35,18 +35,32 @@ impl Converter {
     ) -> Result<JobProgress, ConversionError> {
         let source = DatasetLocation::parse_location(&job.source_uri)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-        if job.kind == JobKind::Move && source.kind() == LocationKind::HuggingFace {
+        let source = source::open(source);
+        if job.kind == JobKind::Move && source.copy_only() {
             return Err(ConversionError::InvalidSource(
                 "Hugging Face datasets are copy-only".to_owned(),
             ));
         }
 
         let context = SessionContext::new();
-        let prepared = source::prepare(&context, &source).await?;
-        let dataframe = context
-            .read_parquet(&prepared.parquet_uri, ParquetReadOptions::default())
+        let prepared = source.prepare(&context).await?;
+        let mut locations = prepared.parquet_locations.into_iter();
+        let first_location = locations.next().ok_or_else(|| {
+            ConversionError::InvalidSource("source contains no Parquet locations".to_owned())
+        })?;
+        let mut dataframe = context
+            .read_parquet(first_location, ParquetReadOptions::default())
             .await
             .map_err(|error| ConversionError::Read(error.to_string()))?;
+        for location in locations {
+            let next = context
+                .read_parquet(location, ParquetReadOptions::default())
+                .await
+                .map_err(|error| ConversionError::Read(error.to_string()))?;
+            dataframe = dataframe
+                .union(next)
+                .map_err(|error| ConversionError::Read(error.to_string()))?;
+        }
         schema::validate(dataframe.schema().fields())?;
         let stream = dataframe
             .execute_stream()
@@ -93,12 +107,11 @@ impl Converter {
             })
             .execute_stream(stream)
             .await;
-        source::cleanup(&prepared).await?;
         write_result.map_err(|error| ConversionError::Write(error.to_string()))?;
 
         progress.finish();
         if job.kind == JobKind::Move {
-            source::delete(&source).await?;
+            source.delete().await?;
         }
         Ok(progress.snapshot())
     }

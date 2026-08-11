@@ -1,18 +1,50 @@
-use std::{
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+use std::{collections::HashSet, sync::Arc};
+
+use async_trait::async_trait;
+use datafusion::prelude::SessionContext;
+use lance_conversion_core::location::DatasetLocation;
+use object_store::{ClientOptions, ObjectStore, http::HttpBuilder};
+use reqwest::{
+    Url,
+    header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
-
-use futures::TryStreamExt;
-use reqwest::Url;
 use serde::Deserialize;
-use tokio::io::AsyncWriteExt;
 
-use super::PreparedSource;
+use super::{PreparedSource, SourceDataset};
 use crate::ConversionError;
 
-pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, ConversionError> {
-    let parsed = HuggingFaceSource::parse(source_uri)?;
+pub(super) struct HuggingFaceDataset {
+    location: DatasetLocation,
+}
+
+impl HuggingFaceDataset {
+    pub(super) const fn new(location: DatasetLocation) -> Self {
+        Self { location }
+    }
+}
+
+#[async_trait]
+impl SourceDataset for HuggingFaceDataset {
+    fn copy_only(&self) -> bool {
+        true
+    }
+
+    async fn prepare(&self, context: &SessionContext) -> Result<PreparedSource, ConversionError> {
+        prepare(context, self.location.uri()).await
+    }
+
+    async fn delete(&self) -> Result<(), ConversionError> {
+        Err(ConversionError::InvalidSource(
+            "Hugging Face datasets are copy-only".to_owned(),
+        ))
+    }
+}
+
+async fn prepare(
+    context: &SessionContext,
+    source_uri: &str,
+) -> Result<PreparedSource, ConversionError> {
+    let parsed = HuggingFaceLocation::parse(source_uri)?;
     let client = reqwest::Client::new();
     let mut query = vec![
         ("dataset", format!("{}/{}", parsed.owner, parsed.name)),
@@ -44,56 +76,58 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
         ));
     }
 
-    let temporary_directory = create_temporary_directory().await?;
-    for (index, parquet_file) in response.parquet_files.into_iter().enumerate() {
-        let mut request = client.get(parquet_file.url);
-        if let Ok(token) = std::env::var("HF_TOKEN") {
-            request = request.bearer_auth(token);
-        }
-        let response = request
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|error| ConversionError::Read(error.to_string()))?;
-        let mut destination =
-            tokio::fs::File::create(temporary_directory.join(format!("part-{index}.parquet")))
-                .await
-                .map_err(|error| ConversionError::Read(error.to_string()))?;
-        let mut chunks = response.bytes_stream();
-        while let Some(chunk) = chunks
-            .try_next()
-            .await
-            .map_err(|error| ConversionError::Read(error.to_string()))?
-        {
-            destination
-                .write_all(&chunk)
-                .await
-                .map_err(|error| ConversionError::Read(error.to_string()))?;
-        }
-        destination
-            .flush()
-            .await
-            .map_err(|error| ConversionError::Read(error.to_string()))?;
-    }
-    Ok(PreparedSource {
-        parquet_uri: temporary_directory.to_string_lossy().into_owned(),
-        temporary_directory: Some(temporary_directory),
-    })
+    let parquet_locations = response
+        .parquet_files
+        .into_iter()
+        .map(|file| file.url)
+        .collect::<Vec<_>>();
+    register_http_stores(context, &parquet_locations)?;
+    Ok(PreparedSource { parquet_locations })
 }
 
-async fn create_temporary_directory() -> Result<PathBuf, ConversionError> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| ConversionError::Read(error.to_string()))?
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "lance-converter-{}-{timestamp}",
-        std::process::id()
-    ));
-    tokio::fs::create_dir(&path)
-        .await
-        .map_err(|error| ConversionError::Read(error.to_string()))?;
-    Ok(path)
+fn register_http_stores(
+    context: &SessionContext,
+    parquet_locations: &[String],
+) -> Result<(), ConversionError> {
+    let mut origins = HashSet::new();
+    for location in parquet_locations {
+        let url = Url::parse(location)
+            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| ConversionError::InvalidSource("HTTP host is missing".to_owned()))?;
+        let origin = match url.port() {
+            Some(port) => format!("{}://{host}:{port}", url.scheme()),
+            None => format!("{}://{host}", url.scheme()),
+        };
+        if !origins.insert(origin.clone()) {
+            continue;
+        }
+        let root = Url::parse(&origin)
+            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
+        let store: Arc<dyn ObjectStore> = Arc::new(
+            HttpBuilder::new()
+                .with_url(origin)
+                .with_client_options(http_client_options()?)
+                .build()
+                .map_err(|error| ConversionError::Read(error.to_string()))?,
+        );
+        context.register_object_store(&root, store);
+    }
+    Ok(())
+}
+
+fn http_client_options() -> Result<ClientOptions, ConversionError> {
+    let Ok(token) = std::env::var("HF_TOKEN") else {
+        return Ok(ClientOptions::new());
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?,
+    );
+    Ok(ClientOptions::new().with_default_headers(headers))
 }
 
 #[derive(Deserialize)]
@@ -106,7 +140,7 @@ struct HuggingFaceParquetFile {
     url: String,
 }
 
-struct HuggingFaceSource {
+struct HuggingFaceLocation {
     owner: String,
     name: String,
     revision: String,
@@ -114,7 +148,7 @@ struct HuggingFaceSource {
     split: Option<String>,
 }
 
-impl HuggingFaceSource {
+impl HuggingFaceLocation {
     fn parse(source_uri: &str) -> Result<Self, ConversionError> {
         let url = Url::parse(source_uri)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;

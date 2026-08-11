@@ -1,27 +1,51 @@
 use std::{path::Path, sync::Arc};
 
+use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use lance_conversion_core::location::{DatasetLocation, LocationKind};
 use object_store::{ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, path::Path as ObjectPath};
 use reqwest::Url;
 
-use super::PreparedSource;
+use super::{PreparedSource, SourceDataset};
 use crate::ConversionError;
 
-pub(super) async fn prepare(
-    context: &SessionContext,
-    source: &DatasetLocation,
-) -> Result<PreparedSource, ConversionError> {
-    match source.kind() {
-        LocationKind::Nfs => Ok(PreparedSource {
-            parquet_uri: source.uri().to_owned(),
-            temporary_directory: None,
-        }),
-        LocationKind::S3 => prepare_s3(context, source.uri()).await,
-        LocationKind::HuggingFace => Err(ConversionError::InvalidSource(
-            "expected a directory-based source".to_owned(),
-        )),
+pub(super) struct DirectorySource {
+    location: DatasetLocation,
+}
+
+impl DirectorySource {
+    pub(super) const fn new(location: DatasetLocation) -> Self {
+        Self { location }
+    }
+}
+
+#[async_trait]
+impl SourceDataset for DirectorySource {
+    fn copy_only(&self) -> bool {
+        false
+    }
+
+    async fn prepare(&self, context: &SessionContext) -> Result<PreparedSource, ConversionError> {
+        match self.location.kind() {
+            LocationKind::Nfs => Ok(PreparedSource {
+                parquet_locations: vec![self.location.uri().to_owned()],
+            }),
+            LocationKind::S3 => prepare_s3(context, self.location.uri()).await,
+            LocationKind::HuggingFace => Err(ConversionError::InvalidSource(
+                "expected a directory-based source".to_owned(),
+            )),
+        }
+    }
+
+    async fn delete(&self) -> Result<(), ConversionError> {
+        match self.location.kind() {
+            LocationKind::Nfs => delete_nfs(self.location.uri()).await,
+            LocationKind::S3 => delete_s3_prefix(self.location.uri()).await,
+            LocationKind::HuggingFace => Err(ConversionError::InvalidSource(
+                "expected a directory-based source".to_owned(),
+            )),
+        }
     }
 }
 
@@ -45,19 +69,8 @@ async fn prepare_s3(
         .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
     context.register_object_store(&root, Arc::clone(&store));
     Ok(PreparedSource {
-        parquet_uri: source_uri.to_owned(),
-        temporary_directory: None,
+        parquet_locations: vec![source_uri.to_owned()],
     })
-}
-
-pub(super) async fn delete(source: &DatasetLocation) -> Result<(), ConversionError> {
-    match source.kind() {
-        LocationKind::Nfs => delete_nfs(source.uri()).await,
-        LocationKind::S3 => delete_s3_prefix(source.uri()).await,
-        LocationKind::HuggingFace => Err(ConversionError::InvalidSource(
-            "expected a directory-based source".to_owned(),
-        )),
-    }
 }
 
 async fn delete_nfs(source_uri: &str) -> Result<(), ConversionError> {
