@@ -141,9 +141,9 @@ mod tests {
         parquet::arrow::ArrowWriter,
     };
     use futures::TryStreamExt;
-    use lance::Dataset;
+    use lance::{Dataset, index::DatasetIndexExt};
     use lance_conversion_core::{
-        job::{ClaimedJob, JobKind, JobStatus, NewJob},
+        job::{ClaimedJob, IndexSpec, IndexType, JobKind, JobStatus, NewJob},
         location::DatasetLocation,
     };
     use lance_converter::{Converter, ConverterConfig};
@@ -164,6 +164,7 @@ mod tests {
     const EXPECTED_ERROR_COUNT: usize = 1;
     const TEST_VALUES: [i64; 3] = [1, 2, 3];
     const EXPECTED_ROW_COUNT: u64 = TEST_VALUES.len() as u64;
+    const TEST_INDEX_NAME: &str = "conversion_0_b_tree_idx";
 
     #[tokio::test]
     async fn conversion_success_marks_job_succeeded() {
@@ -173,7 +174,16 @@ mod tests {
         tokio::fs::create_dir(&source).await.unwrap();
         write_parquet(&source).await;
         let destination = temp_dir.path().join("destination.lance");
-        create_job(&store, &source, &destination).await;
+        create_job(
+            &store,
+            &source,
+            &destination,
+            vec![IndexSpec {
+                columns: vec!["value".to_owned()],
+                index_type: IndexType::BTree,
+            }],
+        )
+        .await;
         let claimed = store
             .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
             .await
@@ -188,9 +198,10 @@ mod tests {
         assert_eq!(job.progress.rows_total, EXPECTED_ROW_COUNT);
         assert!(job.error_reasons.is_empty());
 
-        let output = Dataset::open(destination.to_string_lossy().as_ref())
+        let dataset = Dataset::open(destination.to_string_lossy().as_ref())
             .await
-            .unwrap()
+            .unwrap();
+        let output = dataset
             .scan()
             .try_into_stream()
             .await
@@ -212,6 +223,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(values, TEST_VALUES);
+        assert!(
+            dataset
+                .load_indices()
+                .await
+                .unwrap()
+                .iter()
+                .any(|index| index.name == TEST_INDEX_NAME)
+        );
     }
 
     #[tokio::test]
@@ -221,7 +240,7 @@ mod tests {
         let source = temp_dir.path().join("empty-source");
         tokio::fs::create_dir(&source).await.unwrap();
         let destination = temp_dir.path().join("destination.lance");
-        create_job(&store, &source, &destination).await;
+        create_job(&store, &source, &destination, Vec::new()).await;
         let claimed = store
             .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
             .await
@@ -243,7 +262,7 @@ mod tests {
         tokio::fs::create_dir(&source).await.unwrap();
         write_parquet(&source).await;
         let destination = temp_dir.path().join("destination.lance");
-        create_job(&store, &source, &destination).await;
+        create_job(&store, &source, &destination, Vec::new()).await;
 
         let abandoned = store
             .claim_jobs(TEST_JOB_LIMIT, EXPIRED_LEASE_DURATION_MS)
@@ -276,6 +295,7 @@ mod tests {
         store: &SqliteJobStore,
         source: &std::path::Path,
         destination: &std::path::Path,
+        indices: Vec<IndexSpec>,
     ) {
         store
             .create_job(NewJob {
@@ -284,6 +304,8 @@ mod tests {
                 kind: JobKind::Copy,
                 destination: DatasetLocation::parse_location(destination.to_string_lossy())
                     .unwrap(),
+                blob_columns: Vec::new(),
+                indices,
                 creation_timestamp_ms: TEST_CREATION_TIMESTAMP_MS,
             })
             .await
@@ -295,6 +317,7 @@ mod tests {
         let converter = Arc::new(Converter::new(ConverterConfig {
             target_lance_file_size_mib: config.target_lance_file_size_mib.get(),
             blob_inline_threshold_mib: config.blob_inline_threshold_mib.get(),
+            blob_dedicated_threshold_mib: config.blob_dedicated_threshold_mib.get(),
         }));
         let trait_store: Arc<dyn JobStore> = store.clone();
         run_job(

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use datafusion::{
     arrow::{
         array::{
-            Array, Int64Array, RecordBatch,
+            Array, Int64Array, RecordBatch, StringArray,
             builder::{Int64Builder, ListBuilder},
         },
         datatypes::{DataType, Field, Schema},
@@ -11,11 +11,21 @@ use datafusion::{
     parquet::arrow::ArrowWriter,
 };
 use futures::TryStreamExt;
-use lance::Dataset;
-use lance_conversion_core::job::{Job, JobKind, JobProgress, JobStatus};
+use lance::{Dataset, index::DatasetIndexExt};
+use lance_conversion_core::job::{
+    BlobColumnSpec, IndexSpec, IndexType, Job, JobKind, JobProgress, JobStatus,
+};
 use tempfile::TempDir;
 
 use crate::{ConversionProgress, Converter, ConverterConfig};
+
+const TARGET_FILE_SIZE_MIB: u64 = 512;
+const BLOB_INLINE_THRESHOLD_MIB: u64 = 2;
+const BLOB_DEDICATED_THRESHOLD_MIB: u64 = 4;
+const INLINE_PAYLOAD_BYTES: usize = 1024 * 1024;
+const PACKED_PAYLOAD_BYTES: usize = 3 * 1024 * 1024;
+const DEDICATED_PAYLOAD_BYTES: usize = 5 * 1024 * 1024;
+const BLOB_ROW_INDEX: [u64; 1] = [0];
 
 #[tokio::test]
 async fn converts_local_parquet_directory() {
@@ -45,6 +55,8 @@ async fn converts_local_parquet_directory() {
         kind: JobKind::Copy,
         source_uri: source.to_string_lossy().into_owned(),
         destination_uri: destination.to_string_lossy().into_owned(),
+        blob_columns: Vec::new(),
+        indices: Vec::new(),
         status: JobStatus::Running,
         creation_timestamp_ms: 1,
         update_timestamp_ms: 1,
@@ -54,8 +66,9 @@ async fn converts_local_parquet_directory() {
         progress: JobProgress::default(),
     };
     let converter = Converter::new(ConverterConfig {
-        target_lance_file_size_mib: 512,
-        blob_inline_threshold_mib: 2,
+        target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,
+        blob_inline_threshold_mib: BLOB_INLINE_THRESHOLD_MIB,
+        blob_dedicated_threshold_mib: BLOB_DEDICATED_THRESHOLD_MIB,
     });
     let progress = converter
         .convert(&job, Arc::new(ConversionProgress::default()))
@@ -65,14 +78,13 @@ async fn converts_local_parquet_directory() {
     assert_eq!(progress.rows_read, 3);
     assert_eq!(progress.rows_written, 3);
     assert_eq!(progress.rows_total, 3);
+    let dataset = Dataset::open(destination.to_string_lossy().as_ref())
+        .await
+        .unwrap();
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 3);
     assert_eq!(
-        Dataset::open(destination.to_string_lossy().as_ref())
-            .await
-            .unwrap()
-            .count_rows(None)
-            .await
-            .unwrap(),
-        3
+        dataset.schema().field("value").unwrap().data_type(),
+        DataType::Int64
     );
 }
 
@@ -108,6 +120,8 @@ async fn converts_local_nested_list_columns() {
         kind: JobKind::Copy,
         source_uri: source.to_string_lossy().into_owned(),
         destination_uri: destination.to_string_lossy().into_owned(),
+        blob_columns: Vec::new(),
+        indices: Vec::new(),
         status: JobStatus::Running,
         creation_timestamp_ms: 1,
         update_timestamp_ms: 1,
@@ -117,16 +131,19 @@ async fn converts_local_nested_list_columns() {
         progress: JobProgress::default(),
     };
     Converter::new(ConverterConfig {
-        target_lance_file_size_mib: 512,
-        blob_inline_threshold_mib: 2,
+        target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,
+        blob_inline_threshold_mib: BLOB_INLINE_THRESHOLD_MIB,
+        blob_dedicated_threshold_mib: BLOB_DEDICATED_THRESHOLD_MIB,
     })
     .convert(&job, Arc::new(ConversionProgress::default()))
     .await
     .unwrap();
 
-    let dataset = Dataset::open(destination.to_string_lossy().as_ref())
-        .await
-        .unwrap();
+    let dataset = Arc::new(
+        Dataset::open(destination.to_string_lossy().as_ref())
+            .await
+            .unwrap(),
+    );
     let output = dataset
         .scan()
         .try_into_stream()
@@ -144,4 +161,166 @@ async fn converts_local_nested_list_columns() {
         output[0].schema().field(1).data_type(),
         batch.schema().field(1).data_type()
     );
+}
+
+#[tokio::test]
+async fn ingests_inline_blob_storage() {
+    assert_blob_storage(Some(INLINE_PAYLOAD_BYTES), Some("Inline")).await;
+}
+
+#[tokio::test]
+async fn ingests_packed_blob_storage() {
+    assert_blob_storage(Some(PACKED_PAYLOAD_BYTES), Some("Packed")).await;
+}
+
+#[tokio::test]
+async fn ingests_external_blob_storage() {
+    assert_blob_storage(Some(DEDICATED_PAYLOAD_BYTES), Some("Dedicated")).await;
+}
+
+#[tokio::test]
+async fn ingests_null_blob() {
+    assert_blob_storage(None, None).await;
+}
+
+async fn assert_blob_storage(payload_size: Option<usize>, expected_kind: Option<&str>) {
+    let temp_dir = TempDir::new().unwrap();
+    let source = temp_dir.path().join("source");
+    let destination = temp_dir.path().join("dataset.lance");
+    tokio::fs::create_dir(&source).await.unwrap();
+    let blob_path = if let Some(size) = payload_size {
+        let path = temp_dir.path().join("payload.bin");
+        tokio::fs::write(&path, vec![0_u8; size]).await.unwrap();
+        Some(path)
+    } else {
+        None
+    };
+    let blob_url = blob_path
+        .as_ref()
+        .map(|path| reqwest::Url::from_file_path(path).unwrap().to_string());
+    let schema = Arc::new(Schema::new(vec![Field::new("asset", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec![blob_url]))],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    tokio::fs::write(source.join("part.parquet"), writer.into_inner().unwrap())
+        .await
+        .unwrap();
+
+    let mut job = test_job(&source, &destination);
+    job.blob_columns = vec![BlobColumnSpec {
+        column: "asset".to_owned(),
+    }];
+    Converter::new(test_config())
+        .convert(&job, Arc::new(ConversionProgress::default()))
+        .await
+        .unwrap();
+    if let Some(path) = blob_path {
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    let dataset = Arc::new(
+        Dataset::open(destination.to_string_lossy().as_ref())
+            .await
+            .unwrap(),
+    );
+    let blobs = dataset
+        .take_blobs_by_indices(&BLOB_ROW_INDEX, "asset")
+        .await
+        .unwrap();
+    match (blobs[0].as_ref(), expected_kind, payload_size) {
+        (Some(blob), Some(kind), Some(size)) => {
+            assert_eq!(format!("{:?}", blob.kind()), kind);
+            assert_eq!(blob.size(), u64::try_from(size).unwrap());
+            assert_eq!(blob.read().await.unwrap().len(), size);
+        }
+        (None, None, None) => {}
+        _ => panic!("blob storage did not match the expected kind"),
+    }
+}
+
+#[tokio::test]
+async fn creates_requested_scalar_indexes() {
+    let temp_dir = TempDir::new().unwrap();
+    let source = temp_dir.path().join("source");
+    let destination = temp_dir.path().join("dataset.lance");
+    tokio::fs::create_dir(&source).await.unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("text", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["alpha", "beta", "gamma"])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    tokio::fs::write(source.join("part.parquet"), writer.into_inner().unwrap())
+        .await
+        .unwrap();
+
+    let mut job = test_job(&source, &destination);
+    job.indices = vec![
+        IndexSpec {
+            columns: vec!["id".to_owned()],
+            index_type: IndexType::BTree,
+        },
+        IndexSpec {
+            columns: vec!["text".to_owned()],
+            index_type: IndexType::NGram,
+        },
+    ];
+    Converter::new(test_config())
+        .convert(&job, Arc::new(ConversionProgress::default()))
+        .await
+        .unwrap();
+
+    let dataset = Dataset::open(destination.to_string_lossy().as_ref())
+        .await
+        .unwrap();
+    let indexes = dataset.load_indices().await.unwrap();
+    assert_eq!(indexes.len(), 2);
+    assert!(
+        indexes
+            .iter()
+            .any(|index| index.name == "conversion_0_b_tree_idx")
+    );
+    assert!(
+        indexes
+            .iter()
+            .any(|index| index.name == "conversion_1_n_gram_idx")
+    );
+}
+
+fn test_config() -> ConverterConfig {
+    ConverterConfig {
+        target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,
+        blob_inline_threshold_mib: BLOB_INLINE_THRESHOLD_MIB,
+        blob_dedicated_threshold_mib: BLOB_DEDICATED_THRESHOLD_MIB,
+    }
+}
+
+fn test_job(source: &std::path::Path, destination: &std::path::Path) -> Job {
+    Job {
+        creator: "test-user".to_owned(),
+        kind: JobKind::Copy,
+        source_uri: source.to_string_lossy().into_owned(),
+        destination_uri: destination.to_string_lossy().into_owned(),
+        blob_columns: Vec::new(),
+        indices: Vec::new(),
+        status: JobStatus::Running,
+        creation_timestamp_ms: 1,
+        update_timestamp_ms: 1,
+        attempt: 1,
+        error_reasons: Vec::new(),
+        lease_expiration_timestamp_ms: Some(i64::MAX),
+        progress: JobProgress::default(),
+    }
 }

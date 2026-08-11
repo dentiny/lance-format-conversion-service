@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
+use lance::dataset::{ExternalBlobMode, InsertBuilder, WriteMode, WriteParams};
 use lance_conversion_core::{
     job::{Job, JobKind, JobProgress},
     location::DatasetLocation,
@@ -9,11 +9,9 @@ use lance_conversion_core::{
 use lance_file::version::LanceFileVersion;
 
 use crate::{
-    ConversionError, ConversionProgress, ConverterConfig, destination::Destination, schema, source,
-    validation,
+    ConversionError, ConversionProgress, ConverterConfig, blob, destination::Destination,
+    indexes::Indexes, source, validation,
 };
-
-const MIB: u64 = 1024 * 1024;
 
 pub struct Converter {
     config: ConverterConfig,
@@ -36,6 +34,8 @@ impl Converter {
         job: &Job,
         progress: Arc<ConversionProgress>,
     ) -> Result<JobProgress, ConversionError> {
+        let byte_config = self.config.validate()?;
+
         let source = DatasetLocation::parse_location(&job.source_uri)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
         let source = <dyn source::SourceDataset>::open(source);
@@ -64,44 +64,26 @@ impl Converter {
                 .union(next)
                 .map_err(|error| ConversionError::Read(error.to_string()))?;
         }
-        schema::validate(dataframe.schema().fields())?;
+        validation::validate_schema(dataframe.schema().fields())?;
         let stream = dataframe
             .execute_stream()
             .await
             .map_err(|error| ConversionError::Read(error.to_string()))?;
 
-        let max_bytes_per_file = self
-            .config
-            .target_lance_file_size_mib
-            .checked_mul(MIB)
-            .and_then(|bytes| usize::try_from(bytes).ok())
-            .ok_or_else(|| {
-                ConversionError::InvalidConfiguration(
-                    "target Lance file size does not fit usize".to_owned(),
-                )
-            })?;
-        let inline_threshold = self
-            .config
-            .blob_inline_threshold_mib
-            .checked_mul(MIB)
-            .ok_or_else(|| {
-                ConversionError::InvalidConfiguration("blob inline threshold overflow".to_owned())
-            })?;
-        if inline_threshold > u64::try_from(max_bytes_per_file).unwrap_or(u64::MAX) {
-            return Err(ConversionError::InvalidConfiguration(
-                "blob inline threshold exceeds target Lance file size".to_owned(),
-            ));
-        }
-        let inline_threshold = usize::try_from(inline_threshold)
-            .map_err(|error| ConversionError::InvalidConfiguration(error.to_string()))?;
-        let stream = schema::apply_blob_inline_threshold(stream, inline_threshold);
+        let stream = blob::apply_blob_columns(
+            stream,
+            &job.blob_columns,
+            byte_config.inline_threshold,
+            byte_config.dedicated_threshold,
+        )?;
         let stream = progress.track_reads(stream);
 
         let mut params = WriteParams::with_storage_version(LanceFileVersion::V2_3);
         // Overwrite prevents a full-job retry from appending duplicate rows.
         // Resuming partial work still requires durable fragment checkpoints.
         params.mode = WriteMode::Overwrite;
-        params.max_bytes_per_file = max_bytes_per_file;
+        params.max_bytes_per_file = byte_config.max_bytes_per_file;
+        params.external_blob_mode = ExternalBlobMode::Ingest;
         Destination::new(&job.destination_uri).configure(&mut params)?;
         let callback_progress = Arc::clone(&progress);
         // One conversion uses one sequential Lance writer. It may rotate files
@@ -113,10 +95,17 @@ impl Converter {
             })
             .execute_stream(stream)
             .await;
-        write_result.map_err(|error| ConversionError::Write(error.to_string()))?;
+        let mut destination = write_result.map_err(|error| {
+            if job.blob_columns.is_empty() {
+                ConversionError::Write(error.to_string())
+            } else {
+                ConversionError::Write(format!("blob URL/store ingestion failed: {error}"))
+            }
+        })?;
 
         let source_rows = progress.snapshot().rows_read;
-        validation::validate_row_count(&job.destination_uri, source_rows).await?;
+        validation::validate_row_count(&destination, source_rows).await?;
+        Indexes::new(&job.indices).create(&mut destination).await?;
         progress.finish();
         if job.kind == JobKind::Move {
             source.delete().await?;
