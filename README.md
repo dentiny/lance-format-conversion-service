@@ -20,6 +20,7 @@ The service currently includes:
 - Atomic lease claims, 15-minute lease representation, attempt-based fencing, and progress snapshots
 - Destination URI as the permanent job primary key
 - Stateless Arrow schema validation before each write
+- Post-write source/destination row-count validation before success
 - Parquet-directory readers for NFS and AWS S3
 - Hugging Face dataset Parquet discovery and direct HTTP streaming
 - Lance 2.3 overwrite writes with a configurable soft file-size target
@@ -59,9 +60,6 @@ its conversion workers in one process.
 - Add durable conversion checkpoints and idempotent fragment commits so a
   worker that reclaims an interrupted job can resume from its last committed
   checkpoint instead of restarting the overwrite from the beginning.
-- In the next milestone, validate completed conversions before marking jobs
-  succeeded: count source rows independently, reopen the destination Lance
-  dataset, and fail the attempt if its row count differs.
 - Add a reconciliation task that cleans up terminal jobs after configurable
   age and retained-count thresholds. MVP records are retained indefinitely;
   running and queuing jobs must never be removed by retention cleanup.

@@ -5,6 +5,7 @@ mod error;
 mod progress;
 mod schema;
 mod source;
+mod validation;
 
 pub use config::ConverterConfig;
 pub use converter::Converter;

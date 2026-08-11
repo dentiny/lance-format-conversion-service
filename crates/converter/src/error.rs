@@ -14,6 +14,8 @@ pub enum ConversionError {
     Read(String),
     #[error("Lance write failed: {0}")]
     Write(String),
+    #[error("conversion validation failed: {0}")]
+    Validation(String),
     #[error("move source deletion failed after conversion: {0}")]
     Delete(String),
 }
