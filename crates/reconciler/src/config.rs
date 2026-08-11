@@ -20,7 +20,7 @@ pub const DEFAULT_TARGET_LANCE_FILE_SIZE_MIB: NonZeroU64 = NonZeroU64::new(512).
 /// Default Blob V2 inline payload threshold in MiB.
 pub const DEFAULT_BLOB_INLINE_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(2).unwrap();
 /// Default Blob V2 dedicated-file payload threshold in MiB.
-pub const DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(4).unwrap();
+pub const DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(32).unwrap();
 const MIB: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Parser)]

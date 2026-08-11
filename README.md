@@ -108,7 +108,7 @@ cargo run -p lance-reconciler -- \
   --progress-interval-secs 30 \
   --target-lance-file-size-mib 512 \
   --blob-inline-threshold-mib 2 \
-  --blob-dedicated-threshold-mib 4
+  --blob-dedicated-threshold-mib 32
 ```
 
 Runtime service configuration uses command-line flags. Credentials must not be
