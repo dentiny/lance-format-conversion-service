@@ -215,3 +215,21 @@ curl -X POST http://127.0.0.1:8080/v1/jobs \
 
 `POST /v1/jobs` returns `202 Accepted`. Poll `GET /v1/jobs` for status and
 progress. Job statuses are `queuing`, `running`, `succeeded`, and `failed`.
+
+Filter the newest jobs by exact creator, inclusive creation-time bounds, and
+ongoing status:
+
+```shell
+curl --get http://127.0.0.1:8080/v1/jobs \
+  --data-urlencode 'creator=test-user' \
+  --data-urlencode 'ongoing_only=true' \
+  --data-urlencode 'creation_timestamp_ms_from=1786400000000' \
+  --data-urlencode 'creation_timestamp_ms_to=1786486399999' \
+  --data-urlencode 'limit=100'
+```
+
+All filters are optional and combined with `AND`. Use `failed_only=true` for
+terminal failures; `failed_only` and `ongoing_only` are mutually exclusive.
+Use `order_by=creation|update` and `order=asc|desc` to sort results. The default
+is creation timestamp from newest to oldest. The service returns at most 100
+jobs.

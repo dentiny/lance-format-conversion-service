@@ -26,6 +26,8 @@ const state = {
   inspectedSource: "",
   fields: [],
   jobsLoading: false,
+  jobsQuery: "",
+  expandedJobs: new Set(),
   inspectController: null,
 };
 
@@ -53,6 +55,18 @@ function cacheElements() {
   elements.jobsTableWrap = document.querySelector("#jobs-table-wrap");
   elements.jobsBody = document.querySelector("#jobs-body");
   elements.lastUpdated = document.querySelector("#last-updated");
+  elements.jobFilters = document.querySelector("#job-filters");
+  elements.filterCreator = document.querySelector("#filter-creator");
+  elements.filterStatusInputs = document.querySelectorAll('input[name="job-status"]');
+  elements.filterCreatedFrom = document.querySelector("#filter-created-from");
+  elements.filterCreatedTo = document.querySelector("#filter-created-to");
+  elements.clearFilters = document.querySelector("#clear-filters");
+  elements.createdSortHeader = document.querySelector("#created-sort-header");
+  elements.createdSort = document.querySelector("#created-sort");
+  elements.createdSortDirection = document.querySelector("#created-sort-direction");
+  elements.updatedSortHeader = document.querySelector("#updated-sort-header");
+  elements.updatedSort = document.querySelector("#updated-sort");
+  elements.updatedSortDirection = document.querySelector("#updated-sort-direction");
 }
 
 // Creates an element with an optional class name and text value.
@@ -380,6 +394,39 @@ function formatTimestamp(timestamp) {
   }).format(date);
 }
 
+// Formats elapsed milliseconds as a compact human-readable duration.
+function formatDuration(durationMs) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  if (totalSeconds < 1) {
+    return "<1s";
+  }
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+// Computes total wall-clock time from job creation through completion or now.
+function formatJobDuration(job) {
+  const created = Number(job.creation_timestamp_ms);
+  const terminal = job.status === "succeeded" || job.status === "failed";
+  const ended = terminal ? Number(job.update_timestamp_ms) : Date.now();
+  if (!Number.isFinite(created) || !Number.isFinite(ended)) {
+    return "—";
+  }
+  return formatDuration(ended - created);
+}
+
 // Computes a safe progress percentage for a job.
 function progressPercent(job) {
   const progress = job.progress || {};
@@ -448,6 +495,68 @@ function createErrorCell(job) {
   return cell;
 }
 
+// Renders one labeled list of job conversion options.
+function createSpecGroup(label, values) {
+  const group = makeElement("div", "job-spec-group");
+  group.append(makeElement("span", "job-spec-label", label));
+  const list = makeElement("div", "job-spec-list");
+  if (values.length === 0) {
+    list.append(makeElement("span", "job-spec-empty", "None"));
+  } else {
+    for (const value of values) {
+      list.append(makeElement("span", "job-spec-pill", value));
+    }
+  }
+  group.append(list);
+  return group;
+}
+
+// Builds the expandable blob-column and index detail row for one job.
+function createJobDetailsRow(job, rowId) {
+  const row = makeElement("tr", "job-details-row");
+  row.id = rowId;
+  row.hidden = !state.expandedJobs.has(job.destination_uri);
+  const cell = document.createElement("td");
+  cell.colSpan = 10;
+  const content = makeElement("div", "job-details-content");
+  const blobs = Array.isArray(job.blob_columns)
+    ? job.blob_columns.map((spec) => spec.column)
+    : [];
+  const indices = Array.isArray(job.indices)
+    ? job.indices.map((spec) => `${spec.index_type} · ${(spec.columns || []).join(", ")}`)
+    : [];
+  content.append(
+    createSpecGroup("Blob columns", blobs),
+    createSpecGroup("Indexes", indices),
+  );
+  cell.append(content);
+  row.append(cell);
+  return row;
+}
+
+// Builds a button that toggles one job's conversion details.
+function createDetailsCell(job, detailsRow) {
+  const cell = makeElement("td", "details-cell");
+  const expanded = state.expandedJobs.has(job.destination_uri);
+  const button = makeElement("button", "details-button", expanded ? "Hide details" : "View details");
+  button.type = "button";
+  button.setAttribute("aria-expanded", String(expanded));
+  button.setAttribute("aria-controls", detailsRow.id);
+  button.addEventListener("click", () => {
+    const shouldExpand = !state.expandedJobs.has(job.destination_uri);
+    if (shouldExpand) {
+      state.expandedJobs.add(job.destination_uri);
+    } else {
+      state.expandedJobs.delete(job.destination_uri);
+    }
+    detailsRow.hidden = !shouldExpand;
+    button.textContent = shouldExpand ? "Hide details" : "View details";
+    button.setAttribute("aria-expanded", String(shouldExpand));
+  });
+  cell.append(button);
+  return cell;
+}
+
 // Renders all jobs into the dashboard table.
 function renderJobs(jobs) {
   elements.jobsBody.replaceChildren();
@@ -455,23 +564,29 @@ function renderJobs(jobs) {
     elements.jobsTableWrap.hidden = true;
     elements.jobsState.hidden = false;
     elements.jobsState.className = "state-box empty";
-    elements.jobsState.textContent = "No conversion jobs yet. Create one above to get started.";
+    elements.jobsState.textContent = state.jobsQuery
+      ? "No conversion jobs match the selected filters."
+      : "No conversion jobs yet. Schedule one to get started.";
     return;
   }
 
   for (let index = 0; index < jobs.length; index += 1) {
     const job = jobs[index];
+    const detailsRow = createJobDetailsRow(job, `job-details-${index}`);
     const row = document.createElement("tr");
     const statusCell = document.createElement("td");
     statusCell.append(makeElement("span", `status-pill ${job.status || ""}`, job.status || "unknown"));
     row.append(statusCell);
+    row.append(makeElement("td", "creator-cell", job.creator || "—"));
+    row.append(createDetailsCell(job, detailsRow));
     row.append(createProgressCell(job));
     row.append(createRouteCell(job));
     row.append(makeElement("td", "time-cell", formatTimestamp(job.creation_timestamp_ms)));
     row.append(makeElement("td", "time-cell", formatTimestamp(job.update_timestamp_ms)));
+    row.append(makeElement("td", "duration-cell", formatJobDuration(job)));
     row.append(makeElement("td", "attempt-cell", String(job.attempt ?? 0)));
     row.append(createErrorCell(job));
-    elements.jobsBody.append(row);
+    elements.jobsBody.append(row, detailsRow);
   }
 
   elements.jobsState.hidden = true;
@@ -492,7 +607,8 @@ async function loadJobs() {
   }
 
   try {
-    const response = await fetch("/v1/jobs", {
+    const url = state.jobsQuery ? `/v1/jobs?${state.jobsQuery}` : "/v1/jobs";
+    const response = await fetch(url, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
@@ -517,6 +633,159 @@ async function loadJobs() {
   }
 }
 
+// Formats a timestamp for a datetime-local filter in the browser's timezone.
+function timestampToLocalInput(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+  const date = new Date(Number(timestamp));
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+// Returns the active server-side job ordering from the current query.
+function currentJobSort() {
+  const query = new URLSearchParams(state.jobsQuery);
+  return {
+    field: query.get("order_by") === "update" ? "update" : "creation",
+    order: query.get("order") === "asc" ? "asc" : "desc",
+  };
+}
+
+// Updates both sortable timestamp headers to reflect the active ordering.
+function updateSortControls() {
+  const sort = currentJobSort();
+  const createdActive = sort.field === "creation";
+  const updatedActive = sort.field === "update";
+  elements.createdSortHeader.setAttribute(
+    "aria-sort",
+    createdActive ? (sort.order === "desc" ? "descending" : "ascending") : "none",
+  );
+  elements.updatedSortHeader.setAttribute(
+    "aria-sort",
+    updatedActive ? (sort.order === "desc" ? "descending" : "ascending") : "none",
+  );
+  elements.createdSortDirection.textContent = createdActive
+    ? sort.order === "desc"
+      ? "↓"
+      : "↑"
+    : "";
+  elements.updatedSortDirection.textContent = updatedActive
+    ? sort.order === "desc"
+      ? "↓"
+      : "↑"
+    : "";
+}
+
+// Selects a timestamp sort or reverses the currently selected direction.
+function toggleJobSort(field) {
+  const query = new URLSearchParams(state.jobsQuery);
+  const current = currentJobSort();
+  const order = current.field === field && current.order === "desc" ? "asc" : "desc";
+  if (field === "creation") {
+    query.delete("order_by");
+  } else {
+    query.set("order_by", "update");
+  }
+  if (order === "desc") {
+    query.delete("order");
+  } else {
+    query.set("order", "asc");
+  }
+  state.jobsQuery = query.toString();
+  window.history.replaceState(null, "", state.jobsQuery ? `/jobs?${state.jobsQuery}` : "/jobs");
+  updateSortControls();
+  loadJobs();
+}
+
+// Restores job filters from the current page URL.
+function restoreJobFilters() {
+  const query = new URLSearchParams(window.location.search);
+  elements.filterCreator.value = query.get("creator") || "";
+  let status = "all";
+  if (query.get("ongoing_only") === "true") {
+    status = "ongoing";
+  } else if (query.get("failed_only") === "true") {
+    status = "failed";
+  }
+  for (const input of elements.filterStatusInputs) {
+    input.checked = input.value === status;
+  }
+  elements.filterCreatedFrom.value = timestampToLocalInput(
+    query.get("creation_timestamp_ms_from"),
+  );
+  elements.filterCreatedTo.value = timestampToLocalInput(
+    query.get("creation_timestamp_ms_to"),
+  );
+  state.jobsQuery = query.toString();
+  updateSortControls();
+}
+
+// Converts one datetime-local value to a millisecond timestamp.
+function localInputToTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+// Applies the current job filters and persists them in the page URL.
+function applyJobFilters(event) {
+  event.preventDefault();
+  const from = localInputToTimestamp(elements.filterCreatedFrom.value);
+  const to = localInputToTimestamp(elements.filterCreatedTo.value);
+  elements.filterCreatedTo.setCustomValidity(
+    from !== null && to !== null && from > to
+      ? "Created to must be later than created from."
+      : "",
+  );
+  if (!elements.jobFilters.reportValidity()) {
+    return;
+  }
+
+  const currentSort = currentJobSort();
+  const query = new URLSearchParams();
+  const creator = elements.filterCreator.value.trim();
+  if (creator) {
+    query.set("creator", creator);
+  }
+  const status = document.querySelector('input[name="job-status"]:checked').value;
+  if (status === "failed") {
+    query.set("failed_only", "true");
+  } else if (status === "ongoing") {
+    query.set("ongoing_only", "true");
+  }
+  if (from !== null) {
+    query.set("creation_timestamp_ms_from", String(from));
+  }
+  if (to !== null) {
+    query.set("creation_timestamp_ms_to", String(to));
+  }
+  if (currentSort.field === "update") {
+    query.set("order_by", "update");
+  }
+  if (currentSort.order === "asc") {
+    query.set("order", "asc");
+  }
+  state.jobsQuery = query.toString();
+  window.history.replaceState(null, "", state.jobsQuery ? `/jobs?${state.jobsQuery}` : "/jobs");
+  loadJobs();
+}
+
+// Clears every job filter and reloads the unfiltered job list.
+function clearJobFilters() {
+  elements.jobFilters.reset();
+  elements.filterCreatedTo.setCustomValidity("");
+  state.jobsQuery = "";
+  window.history.replaceState(null, "", "/jobs");
+  updateSortControls();
+  loadJobs();
+}
+
 // Initializes event handlers, the first job load, and polling.
 function initialize() {
   cacheElements();
@@ -527,7 +796,12 @@ function initialize() {
     updateMoveAvailability();
   }
   if (elements.jobsBody) {
+    restoreJobFilters();
     elements.refreshButton.addEventListener("click", loadJobs);
+    elements.jobFilters.addEventListener("submit", applyJobFilters);
+    elements.clearFilters.addEventListener("click", clearJobFilters);
+    elements.createdSort.addEventListener("click", () => toggleJobSort("creation"));
+    elements.updatedSort.addEventListener("click", () => toggleJobSort("update"));
     loadJobs();
     window.setInterval(loadJobs, 3000);
   }

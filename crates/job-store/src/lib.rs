@@ -5,6 +5,26 @@ use lance_conversion_core::job::{
     ClaimedJob, CompletionUpdate, FailureUpdate, Job, LeaseUpdate, NewJob, ProgressUpdate,
 };
 
+/// Filters, orders, and bounds a job query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobQuery {
+    pub creator: Option<String>,
+    pub failed_only: bool,
+    pub ongoing_only: bool,
+    pub creation_timestamp_ms_from: Option<i64>,
+    pub creation_timestamp_ms_to: Option<i64>,
+    pub order_by: JobOrderField,
+    pub descending: bool,
+    pub limit: usize,
+}
+
+/// Timestamp field used to order a job query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobOrderField {
+    CreationTimestamp,
+    UpdateTimestamp,
+}
+
 /// Persists jobs and coordinates lease-based conversion execution.
 #[async_trait]
 pub trait JobStore: Send + Sync {
@@ -12,12 +32,26 @@ pub trait JobStore: Send + Sync {
     /// empty error history, and zero progress.
     async fn create_job(&self, job: NewJob) -> Result<(), StoreError>;
 
-    /// Returns at most `limit` jobs ordered by creation time from newest to
-    /// oldest, with destination URI descending as the deterministic tie-breaker.
+    /// Returns jobs matching all supplied filters, ordered by creation time
+    /// from newest to oldest, with destination URI as the tie-breaker.
     ///
-    /// A zero limit returns an empty list. This method always starts from the
-    /// newest job and does not provide pagination.
-    async fn list_jobs(&self, limit: usize) -> Result<Vec<Job>, StoreError>;
+    /// Timestamp bounds are inclusive. A zero limit returns an empty list.
+    async fn query_jobs(&self, query: JobQuery) -> Result<Vec<Job>, StoreError>;
+
+    /// Returns the newest jobs without filters.
+    async fn list_jobs(&self, limit: usize) -> Result<Vec<Job>, StoreError> {
+        self.query_jobs(JobQuery {
+            creator: None,
+            failed_only: false,
+            ongoing_only: false,
+            creation_timestamp_ms_from: None,
+            creation_timestamp_ms_to: None,
+            order_by: JobOrderField::CreationTimestamp,
+            descending: true,
+            limit,
+        })
+        .await
+    }
 
     /// Atomically claims at most `limit` queuing or lease-expired running jobs.
     ///
