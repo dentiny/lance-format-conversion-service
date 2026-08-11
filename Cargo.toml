@@ -40,9 +40,9 @@ lance-file = { version = "10.0", default-features = false }
 lance-table = { version = "10.0", default-features = false }
 object_store = { version = "0.13", default-features = false, features = ["aws", "http"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
-rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3.27"
 thiserror = { version = "2.0", default-features = false }
 tokio = { version = "1.53", default-features = false }

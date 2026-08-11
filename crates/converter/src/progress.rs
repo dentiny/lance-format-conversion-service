@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use lance_conversion_core::job::JobProgress;
 
 #[derive(Default)]
+#[allow(clippy::struct_field_names)]
 pub struct ConversionProgress {
     rows_read: AtomicU64,
     rows_written: AtomicU64,

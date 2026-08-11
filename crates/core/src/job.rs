@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::location::DatasetLocation;
 
+pub const MAX_JOB_ATTEMPTS: u32 = 16;
+
 macro_rules! string_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,7 +94,7 @@ pub struct ClaimedJob {
 pub struct LeaseUpdate {
     pub destination_uri: String,
     pub attempt: u32,
-    pub lease_duration_ms: i64,
+    pub convert_lease_duration_ms: i64,
     pub progress: JobProgress,
 }
 
@@ -101,4 +103,19 @@ pub struct ProgressUpdate {
     pub destination_uri: String,
     pub attempt: u32,
     pub progress: JobProgress,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionUpdate {
+    pub destination_uri: String,
+    pub attempt: u32,
+    pub progress: JobProgress,
+}
+
+#[derive(Debug, Clone)]
+pub struct FailureUpdate {
+    pub destination_uri: String,
+    pub attempt: u32,
+    pub progress: JobProgress,
+    pub reason: String,
 }

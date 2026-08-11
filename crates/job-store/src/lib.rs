@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
-use lance_conversion_core::job::{ClaimedJob, Job, LeaseUpdate, NewJob, ProgressUpdate};
+use lance_conversion_core::job::{
+    ClaimedJob, CompletionUpdate, FailureUpdate, Job, LeaseUpdate, NewJob, ProgressUpdate,
+};
 
 /// Persists jobs and coordinates lease-based conversion execution.
 #[async_trait]
@@ -27,7 +29,7 @@ pub trait JobStore: Send + Sync {
     async fn claim_jobs(
         &self,
         limit: usize,
-        lease_duration_ms: i64,
+        convert_lease_duration_ms: i64,
     ) -> Result<Vec<ClaimedJob>, StoreError>;
 
     /// Extends an unexpired running job's lease and updates its progress
@@ -42,6 +44,19 @@ pub trait JobStore: Send + Sync {
     /// The update succeeds only when its attempt matches the current attempt.
     /// A stale attempt or expired lease returns [`StoreError::LeaseLost`].
     async fn checkpoint_progress(&self, update: ProgressUpdate) -> Result<Job, StoreError>;
+
+    /// Marks an unexpired running attempt as succeeded and clears its lease.
+    ///
+    /// The update succeeds only for the current attempt and persists its final
+    /// progress. A stale attempt or expired lease returns [`StoreError::LeaseLost`].
+    async fn complete_job(&self, update: CompletionUpdate) -> Result<(), StoreError>;
+
+    /// Records an attempt error and clears its lease.
+    ///
+    /// Attempts below the configured cap return to the queuing state for a
+    /// full retry. The final allowed attempt transitions permanently to failed.
+    /// A stale attempt or expired lease returns [`StoreError::LeaseLost`].
+    async fn fail_job(&self, update: FailureUpdate) -> Result<(), StoreError>;
 }
 
 #[derive(Debug, Error)]

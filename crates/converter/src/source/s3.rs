@@ -16,7 +16,7 @@ pub(super) async fn prepare(
     source_uri: &str,
 ) -> Result<PreparedSource, ConversionError> {
     let (url, bucket) = parse_location(source_uri)?;
-    let store = Arc::new(build_store(&bucket).map_err(read_error)?);
+    let store = Arc::new(build_store(&bucket).map_err(|error| read_error(&error))?);
     let root = Url::parse(&format!("s3://{bucket}"))
         .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
     context.register_object_store(&root, store.clone());
@@ -33,20 +33,27 @@ pub(super) async fn prepare(
         })
         .try_collect()
         .await
-        .map_err(read_error)?;
+        .map_err(|error| read_error(&error))?;
     PreparedSource::new(parquet_files)
 }
 
 pub(super) async fn delete(source_uri: &str) -> Result<(), ConversionError> {
     let (url, bucket) = parse_location(source_uri)?;
-    let store = build_store(&bucket).map_err(delete_error)?;
+    let store = build_store(&bucket).map_err(|error| delete_error(&error))?;
     let prefix = directory_prefix(&url);
     let mut objects = store
         .list(Some(&prefix))
         .map_ok(|metadata| metadata.location);
 
-    while let Some(object) = objects.try_next().await.map_err(delete_error)? {
-        store.delete(&object).await.map_err(delete_error)?;
+    while let Some(object) = objects
+        .try_next()
+        .await
+        .map_err(|error| delete_error(&error))?
+    {
+        store
+            .delete(&object)
+            .await
+            .map_err(|error| delete_error(&error))?;
     }
     Ok(())
 }
@@ -63,19 +70,17 @@ fn parse_location(source_uri: &str) -> Result<(Url, String), ConversionError> {
 }
 
 fn build_store(bucket: &str) -> object_store::Result<AmazonS3> {
-    AmazonS3Builder::from_env()
-        .with_bucket_name(bucket)
-        .build()
+    AmazonS3Builder::from_env().with_bucket_name(bucket).build()
 }
 
 fn directory_prefix(url: &Url) -> ObjectPath {
     ObjectPath::from(format!("{}/", url.path().trim_matches('/')))
 }
 
-fn read_error(error: object_store::Error) -> ConversionError {
+fn read_error(error: &object_store::Error) -> ConversionError {
     ConversionError::Read(error.to_string())
 }
 
-fn delete_error(error: object_store::Error) -> ConversionError {
+fn delete_error(error: &object_store::Error) -> ConversionError {
     ConversionError::Delete(error.to_string())
 }

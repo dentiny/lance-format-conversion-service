@@ -76,14 +76,14 @@ fn validate_type(column: &str, data_type: &DataType) -> Result<(), ConversionErr
         | DataType::ListView(field)
         | DataType::LargeList(field)
         | DataType::LargeListView(field)
-        | DataType::FixedSizeList(field, _) => validate_type(column, field.data_type()),
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => validate_type(column, field.data_type()),
         DataType::Struct(fields) => {
             for field in fields {
                 validate_type(field.name(), field.data_type())?;
             }
             Ok(())
         }
-        DataType::Map(field, _) => validate_type(column, field.data_type()),
         _ => Ok(()),
     }
 }
@@ -113,10 +113,11 @@ mod tests {
 
     #[test]
     fn rejects_variant_metadata() {
-        let variant = Field::new("variant", DataType::Binary, true).with_metadata(HashMap::from([(
-            "PARQUET:logical_type".to_owned(),
-            "VARIANT".to_owned(),
-        )]));
+        let variant =
+            Field::new("variant", DataType::Binary, true).with_metadata(HashMap::from([(
+                "PARQUET:logical_type".to_owned(),
+                "VARIANT".to_owned(),
+            )]));
         assert!(matches!(
             validate(&[Arc::new(variant)]),
             Err(ConversionError::UnsupportedType(_))
