@@ -152,6 +152,17 @@ mod tests {
     use super::run_job;
     use crate::config::Config;
 
+    const TEST_JOB_LIMIT: usize = 1;
+    const TEST_CONVERT_LEASE_DURATION_MS: i64 = 60_000;
+    const EXPIRED_LEASE_DURATION_MS: i64 = 1;
+    const LEASE_EXPIRATION_WAIT: Duration = Duration::from_millis(20);
+    const TEST_CREATION_TIMESTAMP_MS: i64 = 1;
+    const FIRST_ATTEMPT: u32 = 1;
+    const SECOND_ATTEMPT: u32 = 2;
+    const EXPECTED_ERROR_COUNT: usize = 1;
+    const TEST_VALUES: [i64; 3] = [1, 2, 3];
+    const EXPECTED_ROW_COUNT: u64 = TEST_VALUES.len() as u64;
+
     #[tokio::test]
     async fn conversion_success_marks_job_succeeded() {
         let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
@@ -161,14 +172,18 @@ mod tests {
         write_parquet(&source).await;
         let destination = temp_dir.path().join("destination.lance");
         create_job(&store, &source, &destination).await;
-        let claimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
+        let claimed = store
+            .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
+            .await
+            .unwrap()
+            .remove(0);
 
         run_claimed_job(&store, claimed).await;
 
-        let job = store.list_jobs(1).await.unwrap().remove(0);
+        let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
         assert_eq!(job.status, JobStatus::Succeeded);
-        assert_eq!(job.progress.rows_written, 3);
-        assert_eq!(job.progress.rows_total, 3);
+        assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT);
+        assert_eq!(job.progress.rows_total, EXPECTED_ROW_COUNT);
         assert!(job.error_reasons.is_empty());
     }
 
@@ -180,13 +195,17 @@ mod tests {
         tokio::fs::create_dir(&source).await.unwrap();
         let destination = temp_dir.path().join("destination.lance");
         create_job(&store, &source, &destination).await;
-        let claimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
+        let claimed = store
+            .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
+            .await
+            .unwrap()
+            .remove(0);
 
         run_claimed_job(&store, claimed).await;
 
-        let job = store.list_jobs(1).await.unwrap().remove(0);
+        let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
         assert_eq!(job.status, JobStatus::Queuing);
-        assert_eq!(job.error_reasons.len(), 1);
+        assert_eq!(job.error_reasons.len(), EXPECTED_ERROR_COUNT);
     }
 
     #[tokio::test]
@@ -199,12 +218,20 @@ mod tests {
         let destination = temp_dir.path().join("destination.lance");
         create_job(&store, &source, &destination).await;
 
-        let abandoned = store.claim_jobs(1, 1).await.unwrap().remove(0);
-        assert_eq!(abandoned.job.attempt, 1);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let reclaimed = store.claim_jobs(1, 60_000).await.unwrap().remove(0);
-        assert_eq!(reclaimed.job.attempt, 2);
-        assert_eq!(reclaimed.job.error_reasons.len(), 1);
+        let abandoned = store
+            .claim_jobs(TEST_JOB_LIMIT, EXPIRED_LEASE_DURATION_MS)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(abandoned.job.attempt, FIRST_ATTEMPT);
+        tokio::time::sleep(LEASE_EXPIRATION_WAIT).await;
+        let reclaimed = store
+            .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(reclaimed.job.attempt, SECOND_ATTEMPT);
+        assert_eq!(reclaimed.job.error_reasons.len(), EXPECTED_ERROR_COUNT);
         assert_eq!(
             reclaimed.job.error_reasons[0].reason,
             "lease expired before completion"
@@ -212,10 +239,10 @@ mod tests {
 
         run_claimed_job(&store, reclaimed).await;
 
-        let job = store.list_jobs(1).await.unwrap().remove(0);
+        let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
         assert_eq!(job.status, JobStatus::Succeeded);
-        assert_eq!(job.attempt, 2);
-        assert_eq!(job.progress.rows_written, 3);
+        assert_eq!(job.attempt, SECOND_ATTEMPT);
+        assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT);
     }
 
     async fn create_job(
@@ -230,7 +257,7 @@ mod tests {
                 kind: JobKind::Copy,
                 destination: DatasetLocation::parse_location(destination.to_string_lossy())
                     .unwrap(),
-                creation_timestamp_ms: 1,
+                creation_timestamp_ms: TEST_CREATION_TIMESTAMP_MS,
             })
             .await
             .unwrap();
@@ -243,9 +270,15 @@ mod tests {
             blob_inline_threshold_mib: config.blob_inline_threshold_mib.get(),
         }));
         let trait_store: Arc<dyn JobStore> = store.clone();
-        run_job(claimed, trait_store, converter, config, 60_000)
-            .await
-            .unwrap();
+        run_job(
+            claimed,
+            trait_store,
+            converter,
+            config,
+            TEST_CONVERT_LEASE_DURATION_MS,
+        )
+        .await
+        .unwrap();
     }
 
     async fn write_parquet(directory: &std::path::Path) {
@@ -256,7 +289,7 @@ mod tests {
         )]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+            vec![Arc::new(Int64Array::from(TEST_VALUES.to_vec()))],
         )
         .unwrap();
         let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
