@@ -14,4 +14,4 @@ workspace = true
 clap.workspace = true
 lance-job-store-factory.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
