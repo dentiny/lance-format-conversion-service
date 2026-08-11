@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use datafusion::{
     arrow::{
-        array::{RecordBatch, new_null_array},
-        datatypes::{DataType, Field, Fields, Schema, TimeUnit},
+        array::{ArrayRef, RecordBatch, StringDictionaryBuilder, new_null_array},
+        datatypes::{DataType, Field, Fields, Int32Type, Schema, TimeUnit},
     },
     parquet::arrow::ArrowWriter,
 };
@@ -34,19 +34,14 @@ async fn convert_field(root: &std::path::Path, field: &Field) -> Result<(), Stri
         .await
         .map_err(|error| error.to_string())?;
     let schema = Arc::new(Schema::new(vec![field.clone()]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![new_null_array(field.data_type(), 1)],
-    )
-    .map_err(|error| error.to_string())?;
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![get_test_array(field)])
+        .map_err(|error| error.to_string())?;
     let mut writer =
         ArrowWriter::try_new(Vec::new(), schema, None).map_err(|error| error.to_string())?;
     writer.write(&batch).map_err(|error| error.to_string())?;
     tokio::fs::write(
         source.join("data.parquet"),
-        writer
-            .into_inner()
-            .map_err(|error| error.to_string())?,
+        writer.into_inner().map_err(|error| error.to_string())?,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -75,14 +70,20 @@ async fn convert_field(root: &std::path::Path, field: &Field) -> Result<(), Stri
     Ok(())
 }
 
+fn get_test_array(field: &Field) -> ArrayRef {
+    if field.name() == "dictionary" {
+        let mut builder = StringDictionaryBuilder::<Int32Type>::new();
+        builder.append("value").unwrap();
+        Arc::new(builder.finish())
+    } else {
+        new_null_array(field.data_type(), 1)
+    }
+}
+
 /// Canonical Arrow types that both the Parquet reader and Lance 2.3 support.
 fn get_test_fields() -> Fields {
     let item = || Arc::new(Field::new("item", DataType::Int64, true));
-    let nested_list = DataType::List(Arc::new(Field::new(
-        "item",
-        DataType::List(item()),
-        true,
-    )));
+    let nested_list = DataType::List(Arc::new(Field::new("item", DataType::List(item()), true)));
     let struct_type = DataType::Struct(
         vec![
             Field::new("number", DataType::Int64, true),
@@ -130,11 +131,7 @@ fn get_test_fields() -> Fields {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             true,
         ),
-        Field::new(
-            "duration",
-            DataType::Duration(TimeUnit::Microsecond),
-            true,
-        ),
+        Field::new("duration", DataType::Duration(TimeUnit::Microsecond), true),
         Field::new(
             "dictionary",
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -169,4 +166,3 @@ fn get_test_job(source: &std::path::Path, destination: &std::path::Path) -> Job 
         progress: JobProgress::default(),
     }
 }
-

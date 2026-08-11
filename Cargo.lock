@@ -3212,7 +3212,12 @@ name = "lance-reconciler"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "lance-conversion-core",
+ "lance-converter",
+ "lance-job-store",
  "lance-job-store-factory",
+ "lance-job-store-sqlite",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

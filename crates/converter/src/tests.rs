@@ -65,14 +65,14 @@ async fn converts_local_parquet_directory() {
     assert_eq!(progress.rows_read, 3);
     assert_eq!(progress.rows_written, 3);
     assert_eq!(progress.rows_total, 3);
-    assert!(
+    assert_eq!(
         Dataset::open(destination.to_string_lossy().as_ref())
             .await
             .unwrap()
             .count_rows(None)
             .await
-            .unwrap()
-            == 3
+            .unwrap(),
+        3
     );
 }
 
@@ -84,10 +84,7 @@ async fn converts_local_nested_list_columns() {
     let list = Arc::new(list.finish());
 
     let mut nested = ListBuilder::new(ListBuilder::new(Int64Builder::new()));
-    nested.append_value(vec![
-        Some(vec![Some(1), Some(2)]),
-        Some(vec![Some(3)]),
-    ]);
+    nested.append_value(vec![Some(vec![Some(1), Some(2)]), Some(vec![Some(3)])]);
     nested.append_value(vec![None, Some(Vec::<Option<i64>>::new())]);
     let nested = Arc::new(nested.finish());
 
@@ -102,12 +99,9 @@ async fn converts_local_nested_list_columns() {
     tokio::fs::create_dir(&source).await.unwrap();
     let mut writer = ArrowWriter::try_new(Vec::new(), batch.schema(), None).unwrap();
     writer.write(&batch).unwrap();
-    tokio::fs::write(
-        source.join("part.parquet"),
-        writer.into_inner().unwrap(),
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(source.join("part.parquet"), writer.into_inner().unwrap())
+        .await
+        .unwrap();
 
     let job = Job {
         creator: "test-user".to_owned(),
@@ -150,5 +144,4 @@ async fn converts_local_nested_list_columns() {
         output[0].schema().field(1).data_type(),
         batch.schema().field(1).data_type()
     );
-
 }

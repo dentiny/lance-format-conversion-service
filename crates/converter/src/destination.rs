@@ -28,7 +28,7 @@ impl<'a> Destination<'a> {
             AmazonS3Builder::from_env()
                 .with_url(self.uri)
                 .build()
-                .map_err(invalid_destination)?,
+                .map_err(|error| invalid_destination(&error))?,
         );
         root.set_path("");
         root.set_query(None);
@@ -47,6 +47,6 @@ impl<'a> Destination<'a> {
     }
 }
 
-fn invalid_destination(error: object_store::Error) -> ConversionError {
+fn invalid_destination(error: &object_store::Error) -> ConversionError {
     ConversionError::InvalidDestination(error.to_string())
 }

@@ -63,19 +63,20 @@ fn parse_location(source_uri: &str) -> Result<(Url, String), ConversionError> {
 }
 
 fn build_store(bucket: &str) -> object_store::Result<AmazonS3> {
-    AmazonS3Builder::from_env()
-        .with_bucket_name(bucket)
-        .build()
+    AmazonS3Builder::from_env().with_bucket_name(bucket).build()
 }
 
 fn directory_prefix(url: &Url) -> ObjectPath {
     ObjectPath::from(format!("{}/", url.path().trim_matches('/')))
 }
 
+// These signatures intentionally match `Result::map_err`, which owns the error.
+#[allow(clippy::needless_pass_by_value)]
 fn read_error(error: object_store::Error) -> ConversionError {
     ConversionError::Read(error.to_string())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn delete_error(error: object_store::Error) -> ConversionError {
     ConversionError::Delete(error.to_string())
 }

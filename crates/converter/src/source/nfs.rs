@@ -6,9 +6,7 @@ use super::PreparedSource;
 
 pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, ConversionError> {
     let source = PathBuf::from(source_uri);
-    let metadata = tokio::fs::metadata(&source)
-        .await
-        .map_err(read_error)?;
+    let metadata = tokio::fs::metadata(&source).await.map_err(read_error)?;
     let mut directories = Vec::new();
     let mut parquet_files = Vec::new();
 
@@ -54,10 +52,13 @@ fn path_to_string(path: PathBuf) -> Result<String, ConversionError> {
         .map_err(|_| ConversionError::InvalidSource("Parquet path is not valid UTF-8".to_owned()))
 }
 
+// These signatures intentionally match `Result::map_err`, which owns the error.
+#[allow(clippy::needless_pass_by_value)]
 fn read_error(error: std::io::Error) -> ConversionError {
     ConversionError::Read(error.to_string())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn delete_error(error: std::io::Error) -> ConversionError {
     ConversionError::Delete(error.to_string())
 }

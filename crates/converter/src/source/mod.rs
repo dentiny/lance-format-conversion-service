@@ -29,7 +29,7 @@ impl PreparedSource {
 /// Provides a uniform interface for preparing and deleting source datasets.
 ///
 /// Implementations translate their native location into a Parquet URI that
-/// DataFusion can read and own source-specific deletion behavior for move jobs.
+/// `DataFusion` can read and own source-specific deletion behavior for move jobs.
 #[async_trait]
 pub(crate) trait SourceDataset: Send + Sync {
     /// Returns whether this source supports copy jobs only.
@@ -61,7 +61,9 @@ pub(crate) trait SourceDataset: Send + Sync {
 impl dyn SourceDataset {
     pub(crate) fn open(source: DatasetLocation) -> Box<Self> {
         match source.kind() {
-            LocationKind::Nfs | LocationKind::S3 => Box::new(directory::DirectorySource::new(source)),
+            LocationKind::Nfs | LocationKind::S3 => {
+                Box::new(directory::DirectorySource::new(source))
+            }
             LocationKind::HuggingFace => Box::new(hugging_face::HuggingFaceDataset::new(source)),
         }
     }

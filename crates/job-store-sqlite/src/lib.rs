@@ -12,7 +12,8 @@ use rusqlite::{
 };
 
 use lance_conversion_core::job::{
-    ClaimedJob, Job, JobError, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate,
+    ClaimedJob, CompletionUpdate, FailureUpdate, Job, JobError, JobProgress, JobStatus,
+    LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
 use lance_job_store::{JobStore, StoreError};
 
@@ -22,6 +23,7 @@ const JOB_COLUMNS: &str = "creator, kind, source_uri, destination_uri, \
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json, \
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total";
 
+#[allow(clippy::struct_field_names)]
 struct SqlProgress {
     rows_read: i64,
     rows_written: i64,
@@ -172,11 +174,11 @@ impl JobStore for SqliteJobStore {
     async fn claim_jobs(
         &self,
         limit: usize,
-        lease_duration_ms: i64,
+        convert_lease_duration_ms: i64,
     ) -> Result<Vec<ClaimedJob>, StoreError> {
         let clock = Arc::clone(&self.clock);
         self.run(move |connection| {
-            if limit == 0 || lease_duration_ms <= 0 {
+            if limit == 0 || convert_lease_duration_ms <= 0 {
                 return Ok(Vec::new());
             }
             let transaction = connection
@@ -184,22 +186,47 @@ impl JobStore for SqliteJobStore {
                 .map_err(database_error)?;
             let now_ms = clock.now_ms()?;
             let lease_expiration_timestamp_ms = now_ms
-                .checked_add(lease_duration_ms)
+                .checked_add(convert_lease_duration_ms)
                 .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
+            transaction
+                .execute(
+                    "UPDATE jobs
+                     SET status = 'failed',
+                         update_timestamp_ms = ?1,
+                         lease_expiration_timestamp_ms = NULL,
+                         error_reasons_json = json_insert(
+                             error_reasons_json,
+                             '$[#]',
+                             json_object(
+                                 'attempt', attempt,
+                                 'error_timestamp_ms', ?1,
+                                 'reason', 'lease expired on final attempt'
+                             )
+                         )
+                     WHERE status = 'running'
+                       AND lease_expiration_timestamp_ms <= ?1
+                       AND attempt >= ?2",
+                    params![now_ms, i64::from(MAX_JOB_ATTEMPTS)],
+                )
+                .map_err(database_error)?;
             let destinations = {
                 let mut statement = transaction
                     .prepare(
                         "SELECT destination_uri FROM jobs
-                         WHERE status = 'queuing'
-                            OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
+                         WHERE attempt < ?3
+                           AND (
+                               status = 'queuing'
+                               OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
+                           )
                          ORDER BY creation_timestamp_ms, destination_uri
                          LIMIT ?2",
                     )
                     .map_err(database_error)?;
                 let rows = statement
-                    .query_map(params![now_ms, usize_to_i64(limit)?], |row| {
-                        row.get::<_, String>(0)
-                    })
+                    .query_map(
+                        params![now_ms, usize_to_i64(limit)?, i64::from(MAX_JOB_ATTEMPTS)],
+                        |row| row.get::<_, String>(0),
+                    )
                     .map_err(database_error)?;
                 rows.collect::<Result<Vec<_>, _>>()
                     .map_err(database_error)?
@@ -213,7 +240,19 @@ impl JobStore for SqliteJobStore {
                          SET status = 'running',
                              lease_expiration_timestamp_ms = ?2,
                              attempt = attempt + 1,
-                             update_timestamp_ms = ?3
+                             update_timestamp_ms = ?3,
+                             error_reasons_json = CASE
+                                 WHEN status = 'running' THEN json_insert(
+                                     error_reasons_json,
+                                     '$[#]',
+                                     json_object(
+                                         'attempt', attempt,
+                                         'error_timestamp_ms', ?3,
+                                         'reason', 'lease expired before completion'
+                                     )
+                                 )
+                                 ELSE error_reasons_json
+                             END
                          WHERE destination_uri = ?1",
                         params![destination_uri, lease_expiration_timestamp_ms, now_ms],
                     )
@@ -230,7 +269,7 @@ impl JobStore for SqliteJobStore {
     async fn renew_lease(&self, update: LeaseUpdate) -> Result<Job, StoreError> {
         let clock = Arc::clone(&self.clock);
         self.run(move |connection| {
-            if update.lease_duration_ms <= 0 {
+            if update.convert_lease_duration_ms <= 0 {
                 return Err(StoreError::InvalidInput(
                     "lease duration must be positive".to_owned(),
                 ));
@@ -247,7 +286,7 @@ impl JobStore for SqliteJobStore {
                 update.progress,
             )?;
             let lease_expiration_timestamp_ms = now_ms
-                .checked_add(update.lease_duration_ms)
+                .checked_add(update.convert_lease_duration_ms)
                 .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
             let progress = progress_as_i64(update.progress)?;
             let changed = transaction
@@ -328,6 +367,113 @@ impl JobStore for SqliteJobStore {
         })
         .await
     }
+
+    async fn complete_job(&self, update: CompletionUpdate) -> Result<(), StoreError> {
+        let clock = Arc::clone(&self.clock);
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(database_error)?;
+            let now_ms = clock.now_ms()?;
+            validate_progress_update(
+                &transaction,
+                &update.destination_uri,
+                update.attempt,
+                now_ms,
+                update.progress,
+            )?;
+            let progress = progress_as_i64(update.progress)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE jobs
+                     SET status = 'succeeded',
+                         update_timestamp_ms = ?3,
+                         lease_expiration_timestamp_ms = NULL,
+                         rows_read = ?4,
+                         rows_written = ?5,
+                         rows_total = ?6
+                     WHERE destination_uri = ?1
+                       AND status = 'running'
+                       AND attempt = ?2
+                       AND lease_expiration_timestamp_ms > ?3",
+                    params![
+                        update.destination_uri,
+                        i64::from(update.attempt),
+                        now_ms,
+                        progress.rows_read,
+                        progress.rows_written,
+                        progress.rows_total,
+                    ],
+                )
+                .map_err(database_error)?;
+            if changed == 0 {
+                return Err(StoreError::LeaseLost);
+            }
+            transaction.commit().map_err(database_error)
+        })
+        .await
+    }
+
+    async fn fail_job(&self, update: FailureUpdate) -> Result<(), StoreError> {
+        let clock = Arc::clone(&self.clock);
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(database_error)?;
+            let now_ms = clock.now_ms()?;
+            let mut job = validate_progress_update(
+                &transaction,
+                &update.destination_uri,
+                update.attempt,
+                now_ms,
+                update.progress,
+            )?;
+            job.error_reasons.push(JobError {
+                attempt: update.attempt,
+                error_timestamp_ms: now_ms,
+                reason: update.reason,
+            });
+            let error_reasons_json = serde_json::to_string(&job.error_reasons)
+                .map_err(|error| StoreError::Worker(error.to_string()))?;
+            let status = if update.attempt >= MAX_JOB_ATTEMPTS {
+                JobStatus::Failed
+            } else {
+                JobStatus::Queuing
+            };
+            let progress = progress_as_i64(update.progress)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE jobs
+                     SET status = ?3,
+                         update_timestamp_ms = ?4,
+                         error_reasons_json = ?5,
+                         lease_expiration_timestamp_ms = NULL,
+                         rows_read = ?6,
+                         rows_written = ?7,
+                         rows_total = ?8
+                     WHERE destination_uri = ?1
+                       AND status = 'running'
+                       AND attempt = ?2
+                       AND lease_expiration_timestamp_ms > ?4",
+                    params![
+                        update.destination_uri,
+                        i64::from(update.attempt),
+                        status.to_string(),
+                        now_ms,
+                        error_reasons_json,
+                        progress.rows_read,
+                        progress.rows_written,
+                        progress.rows_total,
+                    ],
+                )
+                .map_err(database_error)?;
+            if changed == 0 {
+                return Err(StoreError::LeaseLost);
+            }
+            transaction.commit().map_err(database_error)
+        })
+        .await
+    }
 }
 
 fn validate_progress_update(
@@ -336,7 +482,7 @@ fn validate_progress_update(
     attempt: u32,
     now_ms: i64,
     incoming: JobProgress,
-) -> Result<(), StoreError> {
+) -> Result<Job, StoreError> {
     let job = load_job(connection, destination_uri)?;
     if job.status != JobStatus::Running
         || job.attempt != attempt
@@ -353,7 +499,7 @@ fn validate_progress_update(
             "read or written rows exceed total rows".to_owned(),
         ));
     }
-    Ok(())
+    Ok(job)
 }
 
 fn load_job(connection: &Connection, destination_uri: &str) -> Result<Job, StoreError> {
@@ -455,7 +601,10 @@ mod tests {
     };
 
     use lance_conversion_core::{
-        job::{JobKind, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate},
+        job::{
+            CompletionUpdate, FailureUpdate, JobKind, JobProgress, JobStatus, LeaseUpdate,
+            MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
+        },
         location::DatasetLocation,
     };
     use lance_job_store::{JobStore, StoreError};
@@ -606,7 +755,7 @@ mod tests {
             .renew_lease(LeaseUpdate {
                 destination_uri: destination_uri.clone(),
                 attempt: claim.job.attempt,
-                lease_duration_ms: 200,
+                convert_lease_duration_ms: 200,
                 progress: JobProgress::default(),
             })
             .await
@@ -615,5 +764,126 @@ mod tests {
         let job = store.get_job(&destination_uri).await.unwrap();
         assert_eq!(job.status, JobStatus::Running);
         assert_eq!(job.lease_expiration_timestamp_ms, Some(220));
+    }
+
+    #[tokio::test]
+    async fn completing_a_job_clears_its_lease() {
+        let clock = Arc::new(TestClock::new(10));
+        let store = SqliteJobStore::open_with_clock(":memory:", clock)
+            .await
+            .unwrap();
+        let destination_uri = "s3://destination-bucket/completed.lance";
+        store
+            .create_job(NewJob {
+                creator: "test-user".to_owned(),
+                source: source("/datasets/source"),
+                kind: JobKind::Copy,
+                destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+                creation_timestamp_ms: 3,
+            })
+            .await
+            .unwrap();
+        let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
+        let progress = JobProgress {
+            rows_read: 3,
+            rows_written: 3,
+            rows_total: 3,
+        };
+
+        store
+            .complete_job(CompletionUpdate {
+                destination_uri: destination_uri.to_owned(),
+                attempt: claim.job.attempt,
+                progress,
+            })
+            .await
+            .unwrap();
+
+        let job = store.get_job(destination_uri).await.unwrap();
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(job.lease_expiration_timestamp_ms, None);
+        assert_eq!(job.progress, progress);
+    }
+
+    #[tokio::test]
+    async fn failures_retry_until_attempt_cap() {
+        let clock = Arc::new(TestClock::new(10));
+        let store = SqliteJobStore::open_with_clock(":memory:", clock)
+            .await
+            .unwrap();
+        let destination_uri = "s3://destination-bucket/failed.lance";
+        store
+            .create_job(NewJob {
+                creator: "test-user".to_owned(),
+                source: source("/datasets/source"),
+                kind: JobKind::Copy,
+                destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+                creation_timestamp_ms: 3,
+            })
+            .await
+            .unwrap();
+
+        for attempt in 1..=MAX_JOB_ATTEMPTS {
+            let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
+            assert_eq!(claim.job.attempt, attempt);
+            store
+                .fail_job(FailureUpdate {
+                    destination_uri: destination_uri.to_owned(),
+                    attempt,
+                    progress: JobProgress::default(),
+                    reason: format!("failure {attempt}"),
+                })
+                .await
+                .unwrap();
+        }
+
+        let job = store.get_job(destination_uri).await.unwrap();
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(job.error_reasons.len(), MAX_JOB_ATTEMPTS as usize);
+        assert!(store.claim_jobs(1, 100).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn final_expired_attempt_becomes_failed() {
+        let clock = Arc::new(TestClock::new(10));
+        let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
+            .await
+            .unwrap();
+        let destination_uri = "s3://destination-bucket/expired.lance";
+        store
+            .create_job(NewJob {
+                creator: "test-user".to_owned(),
+                source: source("/datasets/source"),
+                kind: JobKind::Copy,
+                destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+                creation_timestamp_ms: 3,
+            })
+            .await
+            .unwrap();
+
+        for attempt in 1..MAX_JOB_ATTEMPTS {
+            let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
+            store
+                .fail_job(FailureUpdate {
+                    destination_uri: destination_uri.to_owned(),
+                    attempt: claim.job.attempt,
+                    progress: JobProgress::default(),
+                    reason: format!("failure {attempt}"),
+                })
+                .await
+                .unwrap();
+        }
+        let final_claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
+        assert_eq!(final_claim.job.attempt, MAX_JOB_ATTEMPTS);
+        clock.set(110);
+
+        assert!(store.claim_jobs(1, 100).await.unwrap().is_empty());
+        let job = store.get_job(destination_uri).await.unwrap();
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(job.error_reasons.len(), MAX_JOB_ATTEMPTS as usize);
+        assert_eq!(
+            job.error_reasons.last().unwrap().reason,
+            "lease expired on final attempt"
+        );
     }
 }

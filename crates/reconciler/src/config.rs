@@ -71,7 +71,17 @@ impl Config {
                 "blob inline threshold must not exceed the target Lance file size",
             ));
         }
+        self.convert_lease_duration_ms()?;
         Ok(())
+    }
+
+    pub fn convert_lease_duration_ms(&self) -> Result<i64, ConfigError> {
+        i64::try_from(self.lease_duration_secs.get())
+            .ok()
+            .and_then(|seconds| seconds.checked_mul(1_000))
+            .ok_or(ConfigError::InvalidInput(
+                "lease duration does not fit milliseconds",
+            ))
     }
 }
 

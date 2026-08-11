@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     update_timestamp_ms INTEGER NOT NULL,
 
     -- Retry and lease state.
-    -- TODO (next milestone): Stop retrying after 16 attempts.
     attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
     error_reasons_json TEXT NOT NULL DEFAULT '[]' CHECK (
         json_valid(error_reasons_json)

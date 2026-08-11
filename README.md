@@ -7,7 +7,7 @@ Iceberg support is deferred.
 The service assumes that a source dataset remains immutable after schema
 validation and throughout conversion.
 
-## Milestones 0 and 1
+## Milestones 0 through 2
 
 The service currently includes:
 
@@ -24,6 +24,9 @@ The service currently includes:
 - Hugging Face dataset Parquet discovery and direct HTTP streaming
 - Lance 2.3 overwrite writes with a configurable soft file-size target
 - Blob V2 inline-threshold metadata for columns already marked as Blob V2
+- Bounded reconciler polling and conversion workers
+- Lease renewal, 30-second progress checkpoints, and attempt fencing
+- Terminal success/failure transitions and structured retries capped at 16
 
 ## Workspace architecture
 
@@ -34,12 +37,12 @@ The service currently includes:
 - `crates/job-store-factory`: database URL dispatch and backend construction
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
 - `crates/web`: `lance-web`, the HTTP job control plane
-- `crates/reconciler`: `lance-reconciler` process shell; polling and workers are
-  deferred to the next milestone
+- `crates/reconciler`: bounded polling, lease maintenance, progress
+  checkpointing, and conversion execution
 
 There are exactly two deployables: `lance-web` and `lance-reconciler`. There is
-no separate worker or maintenance process. The current reconciler initializes
-the job store but does not claim or execute jobs.
+no separate worker or maintenance process. The reconciler claims jobs and runs
+its conversion workers in one process.
 
 ## TODO
 
@@ -48,9 +51,6 @@ the job store but does not claim or execute jobs.
   to index and choose an index type from a dropdown. Persist and validate all
   blob and index specifications before enqueue, use the blob specifications
   during conversion, and create the requested indexes afterward.
-- Implement reconciler polling, bounded Tokio workers, lease renewal, progress
-  checkpoints, terminal job transitions, and structured retries capped at 16
-  attempts.
 - Add parallel Lance fragment writers for large datasets. The initial
   implementation deliberately uses one sequential writer per conversion job.
 - Preserve bounded end-to-end backpressure between source readers and Lance
@@ -114,9 +114,8 @@ passed as flags because process arguments are observable. AWS credentials use
 the standard AWS environment/instance-provider chain; private Hugging Face
 datasets use `HF_TOKEN`.
 
-The reconciler flags for workers and conversion are reserved for the next
-milestone. The converter already supports a 512 MiB soft file target and Blob
-V2 inline-threshold metadata when invoked directly.
+The reconciler uses these flags to bound conversion concurrency, maintain
+leases, checkpoint progress, and configure Lance writes.
 
 ## Location grammar
 
