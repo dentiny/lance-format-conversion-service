@@ -3,15 +3,17 @@ use std::{collections::HashSet, sync::Arc};
 use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
 use lance_conversion_core::location::DatasetLocation;
-use object_store::{ClientOptions, ObjectStore, http::HttpBuilder};
+use object_store::{ClientOptions, http::HttpBuilder};
 use reqwest::{
     Url,
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{PreparedSource, SourceDataset};
 use crate::ConversionError;
+
+const PARQUET_API_URL: &str = "https://datasets-server.huggingface.co/parquet";
 
 pub(super) struct HuggingFaceDataset {
     location: DatasetLocation,
@@ -46,19 +48,7 @@ async fn prepare(
 ) -> Result<PreparedSource, ConversionError> {
     let parsed = HuggingFaceLocation::parse(source_uri)?;
     let client = reqwest::Client::new();
-    let mut query = vec![
-        ("dataset", format!("{}/{}", parsed.owner, parsed.name)),
-        ("revision", parsed.revision),
-    ];
-    if let Some(config) = parsed.config {
-        query.push(("config", config));
-    }
-    if let Some(split) = parsed.split {
-        query.push(("split", split));
-    }
-    let mut request = client
-        .get("https://datasets-server.huggingface.co/parquet")
-        .query(&query);
+    let mut request = client.get(PARQUET_API_URL).query(&parsed);
     if let Ok(token) = std::env::var("HF_TOKEN") {
         request = request.bearer_auth(token);
     }
@@ -70,49 +60,34 @@ async fn prepare(
         .json::<HuggingFaceParquetResponse>()
         .await
         .map_err(|error| ConversionError::Read(error.to_string()))?;
-    if response.parquet_files.is_empty() {
-        return Err(ConversionError::InvalidSource(
-            "Hugging Face dataset returned no Parquet files".to_owned(),
-        ));
-    }
-
-    let parquet_locations = response
+    let parquet_files = response
         .parquet_files
         .into_iter()
         .map(|file| file.url)
         .collect::<Vec<_>>();
-    register_http_stores(context, &parquet_locations)?;
-    Ok(PreparedSource { parquet_locations })
+    register_http_stores(context, &parquet_files)?;
+    PreparedSource::new(parquet_files)
 }
 
 fn register_http_stores(
     context: &SessionContext,
-    parquet_locations: &[String],
+    parquet_files: &[String],
 ) -> Result<(), ConversionError> {
     let mut origins = HashSet::new();
-    for location in parquet_locations {
+    let client_options = http_client_options()?;
+    for location in parquet_files {
         let url = Url::parse(location)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-        let host = url
-            .host_str()
-            .ok_or_else(|| ConversionError::InvalidSource("HTTP host is missing".to_owned()))?;
-        let origin = match url.port() {
-            Some(port) => format!("{}://{host}:{port}", url.scheme()),
-            None => format!("{}://{host}", url.scheme()),
-        };
+        let origin = url.origin().ascii_serialization();
         if !origins.insert(origin.clone()) {
             continue;
         }
-        let root = Url::parse(&origin)
-            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-        let store: Arc<dyn ObjectStore> = Arc::new(
-            HttpBuilder::new()
-                .with_url(origin)
-                .with_client_options(http_client_options()?)
-                .build()
-                .map_err(|error| ConversionError::Read(error.to_string()))?,
-        );
-        context.register_object_store(&root, store);
+        let store = HttpBuilder::new()
+            .with_url(origin)
+            .with_client_options(client_options.clone())
+            .build()
+            .map_err(|error| ConversionError::Read(error.to_string()))?;
+        context.register_object_store(&url, Arc::new(store));
     }
     Ok(())
 }
@@ -140,11 +115,13 @@ struct HuggingFaceParquetFile {
     url: String,
 }
 
+#[derive(Serialize)]
 struct HuggingFaceLocation {
-    owner: String,
-    name: String,
+    dataset: String,
     revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     config: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     split: Option<String>,
 }
 
@@ -157,18 +134,13 @@ impl HuggingFaceLocation {
                 "expected hf://datasets/owner/name@revision".to_owned(),
             ));
         }
-        let path = url.path().trim_matches('/');
-        let (owner, name_and_revision) = path.split_once('/').ok_or_else(|| {
-            ConversionError::InvalidSource("Hugging Face owner or dataset is missing".to_owned())
-        })?;
-        let (name, revision) = name_and_revision
+        let dataset_and_revision = url.path().trim_matches('/');
+        let (dataset, revision) = dataset_and_revision
             .rsplit_once('@')
-            .map_or((name_and_revision, "main"), |(name, revision)| {
-                (name, revision)
-            });
-        if owner.is_empty() || name.is_empty() || revision.is_empty() {
+            .unwrap_or((dataset_and_revision, "main"));
+        if dataset.split('/').filter(|part| !part.is_empty()).count() != 2 || revision.is_empty() {
             return Err(ConversionError::InvalidSource(
-                "Hugging Face owner, dataset, and revision must not be empty".to_owned(),
+                "expected hf://datasets/owner/name@revision".to_owned(),
             ));
         }
         let mut config = None;
@@ -181,8 +153,7 @@ impl HuggingFaceLocation {
             }
         }
         Ok(Self {
-            owner: owner.to_owned(),
-            name: name.to_owned(),
+            dataset: dataset.to_owned(),
             revision: revision.to_owned(),
             config,
             split,

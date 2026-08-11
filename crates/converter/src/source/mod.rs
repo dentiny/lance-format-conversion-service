@@ -1,5 +1,7 @@
 mod directory;
 mod hugging_face;
+mod nfs;
+mod s3;
 
 use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
@@ -8,7 +10,20 @@ use lance_conversion_core::location::{DatasetLocation, LocationKind};
 use crate::ConversionError;
 
 pub(crate) struct PreparedSource {
-    pub(crate) parquet_locations: Vec<String>,
+    /// Fully resolved Parquet file locations, never directories or prefixes.
+    pub(crate) parquet_files: Vec<String>,
+}
+
+impl PreparedSource {
+    fn new(mut parquet_files: Vec<String>) -> Result<Self, ConversionError> {
+        if parquet_files.is_empty() {
+            return Err(ConversionError::InvalidSource(
+                "source contains no Parquet files".to_owned(),
+            ));
+        }
+        parquet_files.sort_unstable();
+        Ok(Self { parquet_files })
+    }
 }
 
 /// Provides a uniform interface for preparing and deleting source datasets.
@@ -24,9 +39,10 @@ pub(crate) trait SourceDataset: Send + Sync {
 
     /// Makes the source's Parquet files available to the conversion reader.
     ///
-    /// Directory sources return their existing URI and may register an object
-    /// store with `context`. Remote catalog sources return all resolved
-    /// Parquet URLs and register the stores needed to stream them directly.
+    /// Resolves the source dataset into individual Parquet file locations.
+    ///
+    /// Implementations list directory or prefix sources and register any
+    /// object stores required to stream the returned files through `context`.
     ///
     /// # Errors
     ///
@@ -42,9 +58,11 @@ pub(crate) trait SourceDataset: Send + Sync {
     async fn delete(&self) -> Result<(), ConversionError>;
 }
 
-pub(crate) fn open(source: DatasetLocation) -> Box<dyn SourceDataset> {
-    match source.kind() {
-        LocationKind::Nfs | LocationKind::S3 => Box::new(directory::DirectorySource::new(source)),
-        LocationKind::HuggingFace => Box::new(hugging_face::HuggingFaceDataset::new(source)),
+impl dyn SourceDataset {
+    pub(crate) fn open(source: DatasetLocation) -> Box<Self> {
+        match source.kind() {
+            LocationKind::Nfs | LocationKind::S3 => Box::new(directory::DirectorySource::new(source)),
+            LocationKind::HuggingFace => Box::new(hugging_face::HuggingFaceDataset::new(source)),
+        }
     }
 }

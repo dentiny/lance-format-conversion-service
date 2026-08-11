@@ -35,7 +35,7 @@ impl Converter {
     ) -> Result<JobProgress, ConversionError> {
         let source = DatasetLocation::parse_location(&job.source_uri)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-        let source = source::open(source);
+        let source = <dyn source::SourceDataset>::open(source);
         if job.kind == JobKind::Move && source.copy_only() {
             return Err(ConversionError::InvalidSource(
                 "Hugging Face datasets are copy-only".to_owned(),
@@ -44,7 +44,7 @@ impl Converter {
 
         let context = SessionContext::new();
         let prepared = source.prepare(&context).await?;
-        let mut locations = prepared.parquet_locations.into_iter();
+        let mut locations = prepared.parquet_files.into_iter();
         let first_location = locations.next().ok_or_else(|| {
             ConversionError::InvalidSource("source contains no Parquet locations".to_owned())
         })?;
