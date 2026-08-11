@@ -7,9 +7,9 @@ Iceberg support is deferred.
 The service assumes that a source dataset remains immutable after schema
 validation and throughout conversion.
 
-## Milestone 0
+## Milestones 0 and 1
 
-The foundational control plane currently includes:
+The service currently includes:
 
 - Rust 1.97.1 pinned in `rust-toolchain.toml`
 - Axum health and job API in `lance-web`
@@ -19,35 +19,45 @@ The foundational control plane currently includes:
 - SQLite implementation with an embedded schema, WAL, and busy timeout
 - Atomic lease claims, 15-minute lease representation, attempt-based fencing, and progress snapshots
 - Destination URI as the permanent job primary key
-- a separate `lance-reconciler` process, which initializes storage but does not
-  claim work
-
-Stateless dataset schema validation and conversion execution begin in Milestone
-1. The reconciler explicitly does not claim jobs until Milestone 1 provides a
-conversion handler.
+- Stateless Arrow schema validation before each write
+- Parquet-directory readers for NFS and AWS S3
+- Hugging Face dataset Parquet discovery and download
+- Lance 2.3 overwrite writes with a configurable soft file-size target
+- Blob V2 inline-threshold metadata for columns already marked as Blob V2
 
 ## Workspace architecture
 
 - `crates/core`: job models and dataset location classification
+- `crates/converter`: Parquet and Hugging Face readers, validation, Lance writes,
+  progress accounting, and move-source deletion
 - `crates/job-store`: object-safe `JobStore` interface and storage errors
 - `crates/job-store-factory`: database URL dispatch and backend construction
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
 - `crates/web`: `lance-web`, the HTTP job control plane
-- `crates/reconciler`: `lance-reconciler`, the future conversion control loop
+- `crates/reconciler`: `lance-reconciler` process shell; polling and workers are
+  deferred to the next milestone
 
 There are exactly two deployables: `lance-web` and `lance-reconciler`. There is
-no separate worker or maintenance process. In Milestone 1 the reconciler will
-own polling, bounded Tokio conversion workers, progress and lease updates, move
-deletion, and orphan cleanup.
+no separate worker or maintenance process. The current reconciler initializes
+the job store but does not claim or execute jobs.
 
 ## TODO
 
+- Add the pre-enqueue schema UI. After users select blob columns, let them
+  select columns to index and choose an index type from a dropdown. Persist the
+  blob and index specifications with the job, validate them before enqueue,
+  and create the requested indexes after conversion.
+- Implement reconciler polling, bounded Tokio workers, lease renewal, progress
+  checkpoints, terminal job transitions, and structured retries capped at 16
+  attempts.
+- Add parallel Lance fragment writers for large datasets. The initial
+  implementation deliberately uses one sequential writer per conversion job.
+- Add durable conversion checkpoints and idempotent fragment commits so a
+  worker that reclaims an interrupted job can resume from its last committed
+  checkpoint instead of restarting the overwrite from the beginning.
 - Add a reconciliation task that cleans up terminal jobs after configurable
   age and retained-count thresholds. MVP records are retained indefinitely;
   running and queuing jobs must never be removed by retention cleanup.
-- In the next milestone, implement retry transitions with a maximum of 16
-  attempts and append one structured error entry containing the attempt,
-  timestamp, and reason for every failed attempt.
 - In the final production-hardening milestone, add structured tracing,
   `jemalloc`, and request-triggered CPU and memory profiling.
 
@@ -66,10 +76,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo tree --duplicates
 ```
 
-The dependency set intentionally excludes Lance, Arrow, Parquet, S3, Leptos,
-tracing, `jemalloc`, and profiling crates until the milestones that use them.
-Runtime dependencies disable default features and opt into only required
-capabilities.
+The conversion path uses Lance, Arrow/DataFusion, Parquet, AWS S3, and a minimal
+HTTP client for Hugging Face. Leptos, tracing, `jemalloc`, and profiling remain
+deferred. Runtime dependencies disable default features and opt into only
+required capabilities.
 
 ## Run
 
@@ -81,7 +91,7 @@ cargo run -p lance-web -- \
   --database-url sqlite://./data/service.db
 ```
 
-Run the Milestone 0 reconciler:
+Run the reconciler:
 
 ```shell
 cargo run -p lance-reconciler -- \
@@ -96,12 +106,13 @@ cargo run -p lance-reconciler -- \
 ```
 
 Runtime service configuration uses command-line flags. Credentials must not be
-passed as flags because process arguments are observable. The reconciler opens
-the selected job-store backend and waits for Ctrl-C without claiming jobs.
+passed as flags because process arguments are observable. AWS credentials use
+the standard AWS environment/instance-provider chain; private Hugging Face
+datasets use `HF_TOKEN`.
 
-Milestone 1 will map these defaults to Lance `WriteParams::max_bytes_per_file`
-and Blob V2 field metadata. The 512 MiB file target is a soft limit: a file may
-exceed it by the final write batch and footer.
+The reconciler flags for workers and conversion are reserved for the next
+milestone. The converter already supports a 512 MiB soft file target and Blob
+V2 inline-threshold metadata when invoked directly.
 
 ## Location grammar
 

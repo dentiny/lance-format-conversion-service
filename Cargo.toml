@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/converter",
     "crates/core",
     "crates/job-store",
     "crates/job-store-factory",
@@ -25,18 +26,29 @@ pedantic = "warn"
 
 [workspace.dependencies]
 async-trait = "0.1"
+arrow-array = { version = "58.4", default-features = false }
+arrow-schema = { version = "58.4", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 clap = { version = "4.6", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+datafusion = { version = "54.1", default-features = false, features = ["parquet"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+lance = { version = "10.0", default-features = false, features = ["aws"] }
 lance-conversion-core = { path = "crates/core" }
+lance-converter = { path = "crates/converter" }
 lance-job-store = { path = "crates/job-store" }
 lance-job-store-factory = { path = "crates/job-store-factory" }
 lance-job-store-sqlite = { path = "crates/job-store-sqlite" }
+lance-file = { version = "10.0", default-features = false }
+object_store = { version = "0.13", default-features = false, features = ["aws"] }
+parquet = { version = "58.4", default-features = false, features = ["arrow", "snap", "zstd"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "stream"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 thiserror = { version = "2.0", default-features = false }
 tokio = { version = "1.53", default-features = false }
 tower = { version = "0.5", default-features = false, features = ["util"] }
+url = { version = "2.5", default-features = false }
 
 [profile.release]
 lto = "thin"
