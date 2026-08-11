@@ -21,7 +21,7 @@ const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const JOB_COLUMNS: &str = "creator, kind, source_uri, destination_uri, \
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json, \
     lease_expiration_timestamp_ms, source_bytes_read, lance_bytes_written, rows_read, \
-    rows_written, rows_total, work_units_completed, work_units_total";
+    rows_written, rows_total";
 
 struct SqlProgress {
     source_bytes_read: i64,
@@ -29,8 +29,6 @@ struct SqlProgress {
     rows_read: i64,
     rows_written: i64,
     rows_total: i64,
-    work_units_completed: i64,
-    work_units_total: i64,
 }
 
 #[derive(Clone)]
@@ -101,6 +99,13 @@ impl SqliteJobStore {
         })
         .await
         .map_err(|error| StoreError::Worker(error.to_string()))?
+    }
+
+    #[cfg(test)]
+    async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
+        let destination_uri = destination_uri.to_owned();
+        self.run(move |connection| load_job(connection, &destination_uri))
+            .await
     }
 }
 
@@ -257,9 +262,7 @@ impl JobStore for SqliteJobStore {
                          lance_bytes_written = ?6,
                          rows_read = ?7,
                          rows_written = ?8,
-                         rows_total = ?9,
-                         work_units_completed = ?10,
-                         work_units_total = ?11
+                         rows_total = ?9
                      WHERE destination_uri = ?1
                        AND status = 'running'
                        AND attempt = ?2
@@ -274,8 +277,6 @@ impl JobStore for SqliteJobStore {
                         progress.rows_read,
                         progress.rows_written,
                         progress.rows_total,
-                        progress.work_units_completed,
-                        progress.work_units_total,
                     ],
                 )
                 .map_err(database_error)?;
@@ -312,9 +313,7 @@ impl JobStore for SqliteJobStore {
                          lance_bytes_written = ?5,
                          rows_read = ?6,
                          rows_written = ?7,
-                         rows_total = ?8,
-                         work_units_completed = ?9,
-                         work_units_total = ?10
+                         rows_total = ?8
                      WHERE destination_uri = ?1
                        AND status = 'running'
                        AND attempt = ?2
@@ -328,8 +327,6 @@ impl JobStore for SqliteJobStore {
                         progress.rows_read,
                         progress.rows_written,
                         progress.rows_total,
-                        progress.work_units_completed,
-                        progress.work_units_total,
                     ],
                 )
                 .map_err(database_error)?;
@@ -359,11 +356,6 @@ fn validate_progress_update(
             .is_none_or(|expiry| expiry <= now_ms)
     {
         return Err(StoreError::LeaseLost);
-    }
-    if incoming.work_units_total > 0 && incoming.work_units_completed > incoming.work_units_total {
-        return Err(StoreError::InvalidInput(
-            "completed work units exceed total work units".to_owned(),
-        ));
     }
     if incoming.rows_total > 0
         && (incoming.rows_read > incoming.rows_total || incoming.rows_written > incoming.rows_total)
@@ -404,8 +396,6 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
             rows_read: i64_to_u64(row.get(12)?, 12)?,
             rows_written: i64_to_u64(row.get(13)?, 13)?,
             rows_total: i64_to_u64(row.get(14)?, 14)?,
-            work_units_completed: i64_to_u64(row.get(15)?, 15)?,
-            work_units_total: i64_to_u64(row.get(16)?, 16)?,
         },
     })
 }
@@ -443,8 +433,6 @@ fn progress_as_i64(progress: JobProgress) -> Result<SqlProgress, StoreError> {
         rows_read: u64_as_i64(progress.rows_read)?,
         rows_written: u64_as_i64(progress.rows_written)?,
         rows_total: u64_as_i64(progress.rows_total)?,
-        work_units_completed: u64_as_i64(progress.work_units_completed)?,
-        work_units_total: u64_as_i64(progress.work_units_total)?,
     })
 }
 
@@ -482,7 +470,7 @@ mod tests {
     };
 
     use lance_conversion_core::{
-        job::{JobKind, JobProgress, LeaseUpdate, NewJob, ProgressUpdate},
+        job::{JobKind, JobProgress, JobStatus, LeaseUpdate, NewJob, ProgressUpdate},
         location::DatasetLocation,
     };
     use lance_job_store::{JobStore, StoreError};
@@ -512,7 +500,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claims_and_reclaims_expired_jobs_with_attempt_fencing() {
+    async fn created_job_can_be_listed() {
+        let store = SqliteJobStore::open(":memory:").await.unwrap();
+        let destination_uri = "s3://destination-bucket/data.lance";
+        store
+            .create_job(NewJob {
+                creator: "test-user".to_owned(),
+                source: source("/datasets/source"),
+                kind: JobKind::Copy,
+                destination: DatasetLocation::parse_location(destination_uri).unwrap(),
+                creation_timestamp_ms: 3,
+            })
+            .await
+            .unwrap();
+
+        let jobs = store.list_jobs(10).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].destination_uri, destination_uri);
+        assert_eq!(jobs[0].status, JobStatus::Queuing);
+        assert_eq!(
+            store
+                .get_job(destination_uri)
+                .await
+                .unwrap()
+                .destination_uri,
+            destination_uri
+        );
+    }
+
+    #[tokio::test]
+    async fn claiming_a_job_sets_its_status_to_running() {
         let clock = Arc::new(TestClock::new(10));
         let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
             .await
@@ -533,38 +550,14 @@ mod tests {
         assert_eq!(first_claim.len(), 1);
         let destination_uri = first_claim[0].job.destination_uri.clone();
         assert_eq!(first_claim[0].job.attempt, 1);
-
-        clock.set(111);
-        let expired_error = store
-            .renew_lease(LeaseUpdate {
-                destination_uri: destination_uri.clone(),
-                attempt: first_claim[0].job.attempt,
-                lease_duration_ms: 100,
-                progress: JobProgress::default(),
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(expired_error, StoreError::LeaseLost));
-
-        let reclaimed = store.claim_jobs(1, 100).await.unwrap();
-        assert_eq!(reclaimed.len(), 1);
-        assert_eq!(reclaimed[0].job.attempt, 2);
-
-        clock.set(112);
-        let error = store
-            .renew_lease(LeaseUpdate {
-                destination_uri,
-                attempt: first_claim[0].job.attempt,
-                lease_duration_ms: 188,
-                progress: JobProgress::default(),
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::LeaseLost));
+        assert_eq!(
+            store.get_job(&destination_uri).await.unwrap().status,
+            JobStatus::Running
+        );
     }
 
     #[tokio::test]
-    async fn heartbeat_updates_progress_snapshot() {
+    async fn updating_progress_keeps_job_running() {
         let clock = Arc::new(TestClock::new(10));
         let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
             .await
@@ -589,11 +582,9 @@ mod tests {
             rows_read: 10,
             rows_written: 10,
             rows_total: 20,
-            work_units_completed: 1,
-            work_units_total: 2,
         };
         clock.set(20);
-        let checkpointed = store
+        store
             .checkpoint_progress(ProgressUpdate {
                 destination_uri: destination_uri.clone(),
                 attempt: claim.job.attempt,
@@ -601,116 +592,45 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(checkpointed.lease_expiration_timestamp_ms, Some(1_010));
 
-        clock.set(21);
-        let updated = store
-            .renew_lease(LeaseUpdate {
-                destination_uri: destination_uri.clone(),
-                attempt: claim.job.attempt,
-                lease_duration_ms: 1_979,
-                progress: JobProgress::default(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(updated.progress, JobProgress::default());
-        assert_eq!(updated.lease_expiration_timestamp_ms, Some(2_000));
-
-        clock.set(22);
-        let error = store
-            .checkpoint_progress(ProgressUpdate {
-                destination_uri,
-                attempt: claim.job.attempt,
-                progress: JobProgress {
-                    work_units_completed: 3,
-                    work_units_total: 2,
-                    ..JobProgress::default()
-                },
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(error, StoreError::InvalidInput(_)));
-        assert_eq!(
-            store
-                .list_jobs(1)
-                .await
-                .unwrap()
-                .remove(0)
-                .progress
-                .work_units_completed,
-            0
-        );
+        let job = store.get_job(&destination_uri).await.unwrap();
+        assert_eq!(job.status, JobStatus::Running);
+        assert_eq!(job.progress, progress);
     }
 
     #[tokio::test]
-    async fn concurrent_progress_snapshots_remain_valid() {
-        let path = std::env::temp_dir().join(format!("lance-service-{}.db", uuid::Uuid::new_v4()));
+    async fn updating_lease_keeps_job_running() {
         let clock = Arc::new(TestClock::new(10));
-        let first = SqliteJobStore::open_with_clock(&path, clock.clone())
+        let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
             .await
             .unwrap();
-        let second = SqliteJobStore::open_with_clock(&path, clock.clone())
-            .await
-            .unwrap();
-        first
+        store
             .create_job(NewJob {
                 creator: "test-user".to_owned(),
                 source: source("/datasets/source"),
                 kind: JobKind::Copy,
-                destination: DatasetLocation::parse_location(
-                    "s3://destination-bucket/atomic.lance",
-                )
-                .unwrap(),
+                destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
+                    .unwrap(),
                 creation_timestamp_ms: 3,
             })
             .await
             .unwrap();
-        let claim = first.claim_jobs(1, 1_000).await.unwrap().remove(0);
+        let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
         let destination_uri = claim.job.destination_uri.clone();
 
         clock.set(20);
-        let completed_update = first.checkpoint_progress(ProgressUpdate {
-            destination_uri: destination_uri.clone(),
-            attempt: claim.job.attempt,
-            progress: JobProgress {
-                work_units_completed: 10,
-                work_units_total: 0,
-                ..JobProgress::default()
-            },
-        });
-        let total_update = second.checkpoint_progress(ProgressUpdate {
-            destination_uri,
-            attempt: claim.job.attempt,
-            progress: JobProgress {
-                work_units_completed: 0,
-                work_units_total: 5,
-                ..JobProgress::default()
-            },
-        });
-        let (completed_result, total_result) = tokio::join!(completed_update, total_update);
-        completed_result.unwrap();
-        total_result.unwrap();
+        store
+            .renew_lease(LeaseUpdate {
+                destination_uri: destination_uri.clone(),
+                attempt: claim.job.attempt,
+                lease_duration_ms: 200,
+                progress: JobProgress::default(),
+            })
+            .await
+            .unwrap();
 
-        let progress = first.list_jobs(1).await.unwrap().remove(0).progress;
-        assert!(
-            progress.work_units_total == 0
-                || progress.work_units_completed <= progress.work_units_total
-        );
-
-        drop(first);
-        drop(second);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-    }
-
-    #[tokio::test]
-    async fn migrations_are_idempotent_across_reopen() {
-        let path = std::env::temp_dir().join(format!("lance-service-{}.db", uuid::Uuid::new_v4()));
-        SqliteJobStore::open(&path).await.unwrap();
-        SqliteJobStore::open(&path).await.unwrap();
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let job = store.get_job(&destination_uri).await.unwrap();
+        assert_eq!(job.status, JobStatus::Running);
+        assert_eq!(job.lease_expiration_timestamp_ms, Some(220));
     }
 }

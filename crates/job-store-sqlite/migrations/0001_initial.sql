@@ -32,8 +32,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     rows_read INTEGER NOT NULL DEFAULT 0 CHECK (rows_read >= 0),
     rows_written INTEGER NOT NULL DEFAULT 0 CHECK (rows_written >= 0),
     rows_total INTEGER NOT NULL DEFAULT 0 CHECK (rows_total >= 0),
-    work_units_completed INTEGER NOT NULL DEFAULT 0 CHECK (work_units_completed >= 0),
-    work_units_total INTEGER NOT NULL DEFAULT 0 CHECK (work_units_total >= 0),
 
     -- Cross-column invariants.
     CHECK (
@@ -43,8 +41,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     CHECK (
         rows_total = 0
         OR (rows_read <= rows_total AND rows_written <= rows_total)
-    ),
-    CHECK (work_units_total = 0 OR work_units_completed <= work_units_total)
+    )
 ) STRICT;
 
 -- Query pattern: claim the oldest queuing jobs in creation order.
