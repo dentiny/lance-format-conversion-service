@@ -181,29 +181,6 @@ three rows read and written.
 Do not use `~` in local paths because URI parsing does not perform shell
 expansion. Use an absolute path instead.
 
-### Build and test
-
-```shell
-cargo build --workspace
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo tree --duplicates
-```
-
-Runtime configuration uses command-line flags. Credentials must not be passed
-as flags because process arguments are observable. AWS credentials use the
-standard AWS environment or instance-provider chain.
-
-## Location grammar
-
-- NFS-mounted source file or directory: an absolute scheme-less filesystem path
-- NFS-mounted destination: an absolute scheme-less filesystem path
-- S3 source prefix or destination: `s3://bucket/non-empty-prefix`
-- Hugging Face source: `hf://datasets/owner/name@revision?config=name&split=train`
-
-Hugging Face sources are `copy`-only. A `move` job is accepted only for NFS or
-S3 sources.
-
 ## HTTP API
 
 - `GET /` — scheduling interface
