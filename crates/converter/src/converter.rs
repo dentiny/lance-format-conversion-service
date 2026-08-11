@@ -9,8 +9,8 @@ use lance_conversion_core::{
 use lance_file::version::LanceFileVersion;
 
 use crate::{
-    ConversionError, ConversionProgress, ConverterConfig, destination::Destination,
-    indexes::Indexes, schema, source, validation,
+    ConversionError, ConversionProgress, ConverterConfig, blob, destination::Destination,
+    indexes::Indexes, source, validation,
 };
 
 pub struct Converter {
@@ -70,7 +70,7 @@ impl Converter {
             .await
             .map_err(|error| ConversionError::Read(error.to_string()))?;
 
-        let stream = schema::apply_blob_columns(
+        let stream = blob::apply_blob_columns(
             stream,
             &job.blob_columns,
             byte_config.inline_threshold,

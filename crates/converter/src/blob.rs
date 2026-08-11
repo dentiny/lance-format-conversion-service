@@ -19,6 +19,10 @@ const BLOB_V2_EXTENSION_NAME: &str = "lance.blob.v2";
 const BLOB_INLINE_THRESHOLD_KEY: &str = "lance-encoding:blob-inline-size-threshold";
 const BLOB_DEDICATED_THRESHOLD_KEY: &str = "lance-encoding:blob-dedicated-size-threshold";
 
+/// Converts selected URL columns into Blob V2 arrays as batches stream through.
+///
+/// The output fields carry the configured inline and dedicated storage
+/// thresholds; Lance fetches and stores the referenced bytes during the write.
 pub(crate) fn apply_blob_columns(
     stream: SendableRecordBatchStream,
     blob_columns: &[BlobColumnSpec],
@@ -26,12 +30,13 @@ pub(crate) fn apply_blob_columns(
     dedicated_threshold: NonZeroUsize,
 ) -> Result<SendableRecordBatchStream, ConversionError> {
     let source_schema = stream.schema();
-    let selected = validation::validate_blob_columns(source_schema.fields(), blob_columns)?;
+    let blob_column_names =
+        validation::validate_blob_columns(source_schema.fields(), blob_columns)?;
     let fields = source_schema
         .fields()
         .iter()
         .map(|field| {
-            if selected.contains(field.name()) {
+            if blob_column_names.contains(field.name()) {
                 return Arc::new(blob_field_with_options(
                     field.name(),
                     field.is_nullable(),
@@ -66,15 +71,19 @@ pub(crate) fn apply_blob_columns(
     ));
     let batch_schema = Arc::clone(&schema);
     let batches = stream.map(move |batch| {
-        batch.and_then(|batch| transform_batch(&batch, &batch_schema, &selected))
+        batch.and_then(|batch| transform_batch(&batch, &batch_schema, &blob_column_names))
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, batches)))
 }
 
+/// Replaces selected URL columns in one batch with Blob V2 arrays.
+///
+/// `blob_column_names` contains the source fields configured as URL-backed
+/// blobs for the current conversion job.
 fn transform_batch(
     batch: &RecordBatch,
     schema: &Arc<Schema>,
-    selected: &HashSet<String>,
+    blob_column_names: &HashSet<String>,
 ) -> Result<RecordBatch, DataFusionError> {
     let columns = batch
         .schema()
@@ -82,7 +91,7 @@ fn transform_batch(
         .iter()
         .zip(batch.columns())
         .map(|(field, column)| {
-            if selected.contains(field.name()) {
+            if blob_column_names.contains(field.name()) {
                 uri_array(column, field.name())
             } else {
                 Ok(Arc::clone(column))
@@ -93,6 +102,7 @@ fn transform_batch(
         .map_err(|error| DataFusionError::Execution(error.to_string()))
 }
 
+/// Converts one supported Arrow string array into a Blob V2 URI array.
 fn uri_array(column: &ArrayRef, column_name: &str) -> Result<ArrayRef, DataFusionError> {
     let mut builder = BlobArrayBuilder::new(column.len());
     match column.data_type() {
@@ -103,7 +113,7 @@ fn uri_array(column: &ArrayRef, column_name: &str) -> Result<ArrayRef, DataFusio
                 .expect("Utf8 columns use StringArray");
             for row in 0..strings.len() {
                 let value = (!strings.is_null(row)).then(|| strings.value(row));
-                push_uri(&mut builder, value, row, column_name)?;
+                push_source_uri(&mut builder, value, row, column_name)?;
             }
         }
         DataType::LargeUtf8 => {
@@ -113,7 +123,7 @@ fn uri_array(column: &ArrayRef, column_name: &str) -> Result<ArrayRef, DataFusio
                 .expect("LargeUtf8 columns use LargeStringArray");
             for row in 0..strings.len() {
                 let value = (!strings.is_null(row)).then(|| strings.value(row));
-                push_uri(&mut builder, value, row, column_name)?;
+                push_source_uri(&mut builder, value, row, column_name)?;
             }
         }
         DataType::Utf8View => {
@@ -123,7 +133,7 @@ fn uri_array(column: &ArrayRef, column_name: &str) -> Result<ArrayRef, DataFusio
                 .expect("Utf8View columns use StringViewArray");
             for row in 0..strings.len() {
                 let value = (!strings.is_null(row)).then(|| strings.value(row));
-                push_uri(&mut builder, value, row, column_name)?;
+                push_source_uri(&mut builder, value, row, column_name)?;
             }
         }
         data_type => {
@@ -137,7 +147,11 @@ fn uri_array(column: &ArrayRef, column_name: &str) -> Result<ArrayRef, DataFusio
         .map_err(|error| DataFusionError::Execution(error.to_string()))
 }
 
-fn push_uri(
+/// Appends a source URI or null for Lance to ingest.
+///
+/// The URI only identifies where Lance fetches the bytes; their final storage
+/// may be inline, packed, or dedicated according to the configured thresholds.
+fn push_source_uri(
     builder: &mut BlobArrayBuilder,
     value: Option<&str>,
     row: usize,
