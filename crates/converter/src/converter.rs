@@ -10,6 +10,7 @@ use lance_file::version::LanceFileVersion;
 
 use crate::{
     ConversionError, ConversionProgress, ConverterConfig, destination::Destination, schema, source,
+    validation,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -94,6 +95,7 @@ impl Converter {
         let inline_threshold = usize::try_from(inline_threshold)
             .map_err(|error| ConversionError::InvalidConfiguration(error.to_string()))?;
         let stream = schema::apply_blob_inline_threshold(stream, inline_threshold);
+        let stream = progress.track_reads(stream);
 
         let mut params = WriteParams::with_storage_version(LanceFileVersion::V2_3);
         // Overwrite prevents a full-job retry from appending duplicate rows.
@@ -113,6 +115,8 @@ impl Converter {
             .await;
         write_result.map_err(|error| ConversionError::Write(error.to_string()))?;
 
+        let source_rows = progress.snapshot().rows_read;
+        validation::validate_row_count(&job.destination_uri, source_rows).await?;
         progress.finish();
         if job.kind == JobKind::Move {
             source.delete().await?;
