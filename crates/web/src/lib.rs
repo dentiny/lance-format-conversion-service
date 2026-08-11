@@ -7,7 +7,7 @@ pub mod config;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -20,7 +20,7 @@ use lance_conversion_core::{
     job::{BlobColumnSpec, IndexSpec, Job, JobKind, NewJob},
     location::DatasetLocation,
 };
-use lance_job_store::{JobStore, StoreError};
+use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
 const DEFAULT_JOB_LIST_LIMIT: usize = 100;
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -127,8 +127,64 @@ async fn create_job(
     Ok(StatusCode::ACCEPTED)
 }
 
-async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<Job>>, ApiError> {
-    Ok(Json(state.store.list_jobs(DEFAULT_JOB_LIST_LIMIT).await?))
+#[derive(Debug, Default, Deserialize)]
+struct ListJobsQuery {
+    creator: Option<String>,
+    failed_only: Option<bool>,
+    ongoing_only: Option<bool>,
+    creation_timestamp_ms_from: Option<i64>,
+    creation_timestamp_ms_to: Option<i64>,
+    order_by: Option<String>,
+    order: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Lists jobs matching the indexed creator, creation-time, and failure filters.
+async fn list_jobs(
+    State(state): State<AppState>,
+    Query(query): Query<ListJobsQuery>,
+) -> Result<Json<Vec<Job>>, ApiError> {
+    let creator = query
+        .creator
+        .map(|creator| creator.trim().to_owned())
+        .filter(|creator| !creator.is_empty());
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_JOB_LIST_LIMIT)
+        .min(DEFAULT_JOB_LIST_LIMIT);
+    let order_by = match query.order_by.as_deref() {
+        None | Some("creation") => JobOrderField::CreationTimestamp,
+        Some("update") => JobOrderField::UpdateTimestamp,
+        Some(field) => {
+            return Err(ApiError::BadRequest(format!(
+                "unsupported order field '{field}'; expected 'creation' or 'update'"
+            )));
+        }
+    };
+    let descending = match query.order.as_deref() {
+        None | Some("desc") => true,
+        Some("asc") => false,
+        Some(order) => {
+            return Err(ApiError::BadRequest(format!(
+                "unsupported order '{order}'; expected 'asc' or 'desc'"
+            )));
+        }
+    };
+    Ok(Json(
+        state
+            .store
+            .query_jobs(JobQuery {
+                creator,
+                failed_only: query.failed_only.unwrap_or(false),
+                ongoing_only: query.ongoing_only.unwrap_or(false),
+                creation_timestamp_ms_from: query.creation_timestamp_ms_from,
+                creation_timestamp_ms_to: query.creation_timestamp_ms_to,
+                order_by,
+                descending,
+                limit,
+            })
+            .await?,
+    ))
 }
 
 fn now_ms() -> Result<i64, ApiError> {
@@ -258,6 +314,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn job_query_filters_by_creator() {
+        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        let app = router(store);
+        for (creator, destination) in [
+            ("alice", "s3://destination-bucket/alice.lance"),
+            ("bob", "s3://destination-bucket/bob.lance"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/jobs")
+                        .header("content-type", "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"creator":"{creator}","source_uri":"s3://source-bucket/data","kind":"copy","destination_uri":"{destination}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/jobs?creator=alice&ongoing_only=true&order_by=update&order=asc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let jobs: Vec<lance_conversion_core::job::Job> = serde_json::from_slice(
+            &to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].creator, "alice");
     }
 
     #[tokio::test]

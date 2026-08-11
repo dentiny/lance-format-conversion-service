@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use sqlx::{
-    Row, Sqlite, SqliteConnection, SqlitePool, Transaction,
+    QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool, Transaction,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
 };
 
@@ -15,19 +15,17 @@ use lance_conversion_core::job::{
     BlobColumnSpec, ClaimedJob, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError,
     JobProgress, JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
-use lance_job_store::{JobStore, StoreError};
+use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
 const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LIST_JOBS_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
+const SELECT_JOBS_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
     blob_columns_json, indices_json
-    FROM jobs
-    ORDER BY creation_timestamp_ms DESC, destination_uri DESC
-    LIMIT ?1";
+    FROM jobs";
 const LOAD_JOB_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
@@ -146,12 +144,60 @@ impl JobStore for SqliteJobStore {
         transaction.commit().await.map_err(database_error)
     }
 
-    async fn list_jobs(&self, limit: usize) -> Result<Vec<Job>, StoreError> {
-        if limit == 0 {
+    async fn query_jobs(&self, query: JobQuery) -> Result<Vec<Job>, StoreError> {
+        if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query(LIST_JOBS_SQL)
-            .bind(usize_to_i64(limit)?)
+        if query.failed_only && query.ongoing_only {
+            return Err(StoreError::InvalidInput(
+                "failed-only and ongoing-only filters are mutually exclusive".to_owned(),
+            ));
+        }
+        if let (Some(from), Some(to)) = (
+            query.creation_timestamp_ms_from,
+            query.creation_timestamp_ms_to,
+        ) && from > to
+        {
+            return Err(StoreError::InvalidInput(
+                "creation timestamp lower bound exceeds upper bound".to_owned(),
+            ));
+        }
+
+        let mut sql = QueryBuilder::<Sqlite>::new(SELECT_JOBS_SQL);
+        sql.push(" WHERE 1 = 1");
+        if let Some(creator) = query.creator {
+            sql.push(" AND creator = ").push_bind(creator);
+        }
+        if query.failed_only {
+            sql.push(" AND status = 'failed'");
+        } else if query.ongoing_only {
+            sql.push(" AND status IN ('queuing', 'running')");
+        }
+        if let Some(timestamp) = query.creation_timestamp_ms_from {
+            sql.push(" AND creation_timestamp_ms >= ")
+                .push_bind(timestamp);
+        }
+        if let Some(timestamp) = query.creation_timestamp_ms_to {
+            sql.push(" AND creation_timestamp_ms <= ")
+                .push_bind(timestamp);
+        }
+        sql.push(" ORDER BY ");
+        match query.order_by {
+            JobOrderField::CreationTimestamp => {
+                sql.push("creation_timestamp_ms");
+            }
+            JobOrderField::UpdateTimestamp => {
+                sql.push("update_timestamp_ms");
+            }
+        }
+        if query.descending {
+            sql.push(" DESC, destination_uri DESC");
+        } else {
+            sql.push(" ASC, destination_uri ASC");
+        }
+        sql.push(" LIMIT ").push_bind(usize_to_i64(query.limit)?);
+        let rows = sql
+            .build()
             .fetch_all(&self.pool)
             .await
             .map_err(database_error)?;

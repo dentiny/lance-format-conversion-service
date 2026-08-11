@@ -10,7 +10,7 @@ use lance_conversion_core::{
     },
     location::DatasetLocation,
 };
-use lance_job_store::{JobStore, StoreError};
+use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
 use super::store::{Clock, SqliteJobStore};
 
@@ -64,6 +64,93 @@ async fn created_job_can_be_listed() {
             .unwrap()
             .destination_uri,
         destination_uri
+    );
+}
+
+#[tokio::test]
+async fn jobs_can_be_filtered_by_creator_and_creation_timestamp() {
+    const QUERY_LIMIT: usize = 10;
+    const LOWER_BOUND_MS: i64 = 15;
+    const UPPER_BOUND_MS: i64 = 35;
+
+    let store = SqliteJobStore::open_with_clock(":memory:", Arc::new(TestClock::new(100)))
+        .await
+        .unwrap();
+    for (creator, timestamp, destination) in [
+        ("alice", 10, "/destinations/alice-old.lance"),
+        ("bob", 20, "/destinations/bob.lance"),
+        ("alice", 30, "/destinations/alice-new.lance"),
+    ] {
+        store
+            .create_job(NewJob {
+                creator: creator.to_owned(),
+                source: source("/datasets/source"),
+                kind: JobKind::Copy,
+                destination: source(destination),
+                blob_columns: Vec::new(),
+                indices: Vec::new(),
+                creation_timestamp_ms: timestamp,
+            })
+            .await
+            .unwrap();
+    }
+
+    let jobs = store
+        .query_jobs(JobQuery {
+            creator: Some("alice".to_owned()),
+            failed_only: false,
+            ongoing_only: false,
+            creation_timestamp_ms_from: Some(LOWER_BOUND_MS),
+            creation_timestamp_ms_to: Some(UPPER_BOUND_MS),
+            order_by: JobOrderField::CreationTimestamp,
+            descending: true,
+            limit: QUERY_LIMIT,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].creator, "alice");
+    assert_eq!(jobs[0].creation_timestamp_ms, 30);
+
+    let oldest_first = store
+        .query_jobs(JobQuery {
+            creator: None,
+            failed_only: false,
+            ongoing_only: false,
+            creation_timestamp_ms_from: None,
+            creation_timestamp_ms_to: None,
+            order_by: JobOrderField::CreationTimestamp,
+            descending: false,
+            limit: QUERY_LIMIT,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        oldest_first
+            .iter()
+            .map(|job| job.creation_timestamp_ms)
+            .collect::<Vec<_>>(),
+        [10, 20, 30]
+    );
+
+    store.claim_jobs(1, 100).await.unwrap();
+    let recently_updated = store
+        .query_jobs(JobQuery {
+            creator: None,
+            failed_only: false,
+            ongoing_only: false,
+            creation_timestamp_ms_from: None,
+            creation_timestamp_ms_to: None,
+            order_by: JobOrderField::UpdateTimestamp,
+            descending: true,
+            limit: QUERY_LIMIT,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        recently_updated[0].destination_uri,
+        "/destinations/alice-old.lance"
     );
 }
 
@@ -252,6 +339,20 @@ async fn completing_a_job_clears_its_lease() {
     assert_eq!(job.status, JobStatus::Succeeded);
     assert_eq!(job.lease_expiration_timestamp_ms, None);
     assert_eq!(job.progress, progress);
+    let ongoing_jobs = store
+        .query_jobs(JobQuery {
+            creator: None,
+            failed_only: false,
+            ongoing_only: true,
+            creation_timestamp_ms_from: None,
+            creation_timestamp_ms_to: None,
+            order_by: JobOrderField::CreationTimestamp,
+            descending: true,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert!(ongoing_jobs.is_empty());
 }
 
 #[tokio::test]
@@ -292,6 +393,21 @@ async fn failures_retry_until_attempt_cap() {
     assert_eq!(job.status, JobStatus::Failed);
     assert_eq!(job.error_reasons.len(), MAX_JOB_ATTEMPTS as usize);
     assert!(store.claim_jobs(1, 100).await.unwrap().is_empty());
+    let failed_jobs = store
+        .query_jobs(JobQuery {
+            creator: Some("test-user".to_owned()),
+            failed_only: true,
+            ongoing_only: false,
+            creation_timestamp_ms_from: None,
+            creation_timestamp_ms_to: None,
+            order_by: JobOrderField::CreationTimestamp,
+            descending: true,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(failed_jobs.len(), 1);
+    assert_eq!(failed_jobs[0].destination_uri, destination_uri);
 }
 
 #[tokio::test]

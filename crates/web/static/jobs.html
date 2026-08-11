@@ -43,16 +43,62 @@
             <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh jobs" title="Refresh jobs">↻</button>
           </div>
         </div>
+        <form id="job-filters" class="job-filters" aria-label="Filter conversion jobs">
+          <div class="filter-field">
+            <label for="filter-creator">Creator</label>
+            <input id="filter-creator" name="creator" type="search" placeholder="All creators" autocomplete="off">
+          </div>
+          <fieldset class="filter-field filter-status">
+            <legend>Status</legend>
+            <div class="filter-status-options">
+              <label>
+                <input type="radio" name="job-status" value="all" checked>
+                <span>All</span>
+              </label>
+              <label>
+                <input type="radio" name="job-status" value="ongoing">
+                <span>Ongoing</span>
+              </label>
+              <label>
+                <input type="radio" name="job-status" value="failed">
+                <span>Failed</span>
+              </label>
+            </div>
+          </fieldset>
+          <div class="filter-field">
+            <label for="filter-created-from">Created from</label>
+            <input id="filter-created-from" name="created_from" type="datetime-local">
+          </div>
+          <div class="filter-field">
+            <label for="filter-created-to">Created to</label>
+            <input id="filter-created-to" name="created_to" type="datetime-local">
+          </div>
+          <div class="filter-actions">
+            <button class="button button-secondary" type="submit">Apply filters</button>
+            <button id="clear-filters" class="button button-ghost" type="button">Clear</button>
+          </div>
+        </form>
         <div id="jobs-state" class="state-box" role="status" aria-live="polite">Loading jobs…</div>
         <div id="jobs-table-wrap" class="table-scroll" hidden>
           <table class="jobs-table">
             <thead>
               <tr>
                 <th scope="col">Status</th>
+                <th scope="col">Creator</th>
+                <th scope="col">Details</th>
                 <th scope="col">Progress</th>
                 <th scope="col">Source → Destination</th>
-                <th scope="col">Created</th>
-                <th scope="col">Updated</th>
+                <th id="created-sort-header" scope="col" aria-sort="descending">
+                  <button id="created-sort" class="sort-button" type="button" title="Reverse creation-time order">
+                    Created <span id="created-sort-direction">↓</span>
+                  </button>
+                </th>
+                <th id="updated-sort-header" scope="col" aria-sort="none">
+                  <button id="updated-sort" class="sort-button" type="button" title="Sort by update time">
+                    Updated <span id="updated-sort-direction"></span>
+                  </button>
+                </th>
+                <th scope="col">Duration</th>
                 <th scope="col">Attempt</th>
                 <th scope="col">Errors</th>
               </tr>
