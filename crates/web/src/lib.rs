@@ -8,10 +8,11 @@ pub mod config;
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use lance_converter::{SourceSchemaInspection, inspect_source_schema};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -22,6 +23,10 @@ use lance_conversion_core::{
 use lance_job_store::{JobStore, StoreError};
 
 const DEFAULT_JOB_LIST_LIMIT: usize = 100;
+const INDEX_HTML: &str = include_str!("../static/index.html");
+const JOBS_HTML: &str = include_str!("../static/jobs.html");
+const APP_CSS: &str = include_str!("../static/app.css");
+const APP_JS: &str = include_str!("../static/app.js");
 
 #[derive(Clone)]
 struct AppState {
@@ -30,9 +35,37 @@ struct AppState {
 
 pub fn router(store: Arc<dyn JobStore>) -> Router {
     Router::new()
+        .route("/", get(index_page))
+        .route("/jobs", get(jobs_page))
+        .route("/app.css", get(stylesheet))
+        .route("/app.js", get(javascript))
         .route("/healthz", get(health))
         .route("/v1/jobs", post(create_job).get(list_jobs))
+        .route("/v1/sources/inspect", post(inspect_source))
         .with_state(AppState { store })
+}
+
+/// Serves the embedded MVP application shell.
+async fn index_page() -> Html<&'static str> {
+    Html(INDEX_HTML)
+}
+
+/// Serves the conversion job monitoring page.
+async fn jobs_page() -> Html<&'static str> {
+    Html(JOBS_HTML)
+}
+
+/// Serves the embedded application stylesheet.
+async fn stylesheet() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
+}
+
+/// Serves the embedded application JavaScript.
+async fn javascript() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        APP_JS,
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +75,21 @@ struct Health {
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+#[derive(Debug, Deserialize)]
+struct InspectSourceRequest {
+    source_uri: String,
+}
+
+/// Inspects and validates a source schema before job submission.
+async fn inspect_source(
+    Json(request): Json<InspectSourceRequest>,
+) -> Result<Json<SourceSchemaInspection>, ApiError> {
+    inspect_source_schema(&request.source_uri)
+        .await
+        .map(Json)
+        .map_err(|error| ApiError::BadRequest(error.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +196,34 @@ mod tests {
     use crate::{ApiError, ErrorBody, router};
 
     const TEST_RESPONSE_BODY_LIMIT: usize = 64 * 1024;
+
+    #[tokio::test]
+    async fn root_serves_the_mvp_ui() {
+        let store = SqliteJobStore::open(":memory:").await.unwrap();
+        let response = router(Arc::new(store))
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Lance Format Conversion"));
+    }
+
+    #[tokio::test]
+    async fn jobs_page_is_served_separately() {
+        let store = SqliteJobStore::open(":memory:").await.unwrap();
+        let response = router(Arc::new(store))
+            .oneshot(Request::builder().uri("/jobs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Conversion jobs"));
+    }
 
     #[tokio::test]
     async fn health_endpoint_is_available() {

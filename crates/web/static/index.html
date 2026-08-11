@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Create and monitor Lance dataset conversion jobs.">
+    <title>Lance Format Conversion</title>
+    <link rel="stylesheet" href="app.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Lance conversion home">
+        <span class="brand-mark" aria-hidden="true">L</span>
+        <span>Lance <strong>Conversion</strong></span>
+      </a>
+      <div class="topbar-context">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>FORMAT CONVERSION SERVICE</span>
+      </div>
+      <a class="topbar-link" href="/jobs">Jobs</a>
+    </header>
+
+    <main id="top" class="page">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <span class="eyebrow">Conversion control plane</span>
+          <h1 id="page-title">Move data into Lance</h1>
+          <p>Inspect a source, configure columns, and track conversion progress.</p>
+        </div>
+        <span class="service-badge"><span aria-hidden="true">●</span> API connected</span>
+      </section>
+
+      <section class="panel" aria-labelledby="create-title">
+        <div class="panel-title">
+          <div>
+            <span class="eyebrow">New conversion</span>
+            <h2 id="create-title">Create job</h2>
+          </div>
+          <span class="step-label">01 / CONFIGURE</span>
+        </div>
+
+        <form id="job-form" class="job-form">
+          <div class="form-grid">
+            <div class="field">
+              <label for="creator">Creator</label>
+              <input id="creator" name="creator" type="text" autocomplete="name" placeholder="data-platform" required>
+            </div>
+
+            <fieldset class="field kind-field">
+              <legend>Operation</legend>
+              <div class="segmented">
+                <label>
+                  <input type="radio" name="kind" value="copy" checked>
+                  <span>Copy</span>
+                </label>
+                <label id="move-option">
+                  <input id="kind-move" type="radio" name="kind" value="move">
+                  <span>Move</span>
+                </label>
+              </div>
+              <small id="move-help" class="field-help" hidden>Move is unavailable for Hugging Face sources.</small>
+            </fieldset>
+
+            <div class="field field-wide">
+              <label for="source-uri">Source URI</label>
+              <div class="input-action">
+                <input id="source-uri" name="source_uri" type="text" spellcheck="false" placeholder="s3://bucket/dataset or hf://datasets/org/name" aria-describedby="source-help" required>
+                <button id="inspect-button" class="button button-secondary" type="button">Inspect schema</button>
+              </div>
+              <small id="source-help" class="field-help">Supported location schemes depend on service configuration.</small>
+            </div>
+
+            <div class="field field-wide">
+              <label for="destination-uri">Destination URI</label>
+              <input id="destination-uri" name="destination_uri" type="text" spellcheck="false" placeholder="s3://bucket/output.lance" required>
+            </div>
+          </div>
+
+          <div id="schema-section" class="schema-section" hidden>
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Source schema</span>
+                <h3>Column configuration</h3>
+              </div>
+              <span id="schema-count" class="count-badge"></span>
+            </div>
+            <div id="schema-state" class="state-box" role="status" aria-live="polite"></div>
+            <div id="schema-table-wrap" class="table-scroll" hidden>
+              <table class="schema-table">
+                <thead>
+                  <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">Column</th>
+                    <th scope="col">Data type</th>
+                    <th scope="col">Nullable</th>
+                    <th scope="col">Blob</th>
+                    <th scope="col">Index type</th>
+                  </tr>
+                </thead>
+                <tbody id="schema-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="form-message" class="form-message" role="status" aria-live="polite" hidden></div>
+          <div class="form-actions">
+            <span id="selection-summary" class="selection-summary">Inspect the source to configure columns.</span>
+            <button id="submit-button" class="button button-primary" type="submit">Create conversion job</button>
+          </div>
+        </form>
+      </section>
+
+    </main>
+
+    <footer>
+      <span>LANCE FORMAT CONVERSION</span>
+      <a class="footer-link" href="/jobs">View conversion jobs →</a>
+    </footer>
+  </body>
+</html>

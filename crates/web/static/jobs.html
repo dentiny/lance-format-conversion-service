@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Monitor Lance dataset conversion jobs.">
+    <title>Conversion Jobs · Lance Format Conversion</title>
+    <link rel="stylesheet" href="/app.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Lance conversion home">
+        <span class="brand-mark" aria-hidden="true">L</span>
+        <span>Lance <strong>Conversion</strong></span>
+      </a>
+      <div class="topbar-context">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>FORMAT CONVERSION SERVICE</span>
+      </div>
+      <a class="topbar-link" href="/">New conversion</a>
+    </header>
+
+    <main class="page">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <span class="eyebrow">Live queue</span>
+          <h1 id="page-title">Conversion jobs</h1>
+          <p>Monitor queued, running, completed, and failed conversions.</p>
+        </div>
+        <a class="button button-primary page-action" href="/">Schedule conversion</a>
+      </section>
+
+      <section id="jobs" class="panel jobs-panel" aria-labelledby="jobs-title">
+        <div class="panel-title">
+          <div>
+            <span class="eyebrow">Job history</span>
+            <h2 id="jobs-title">All conversions</h2>
+          </div>
+          <div class="panel-actions">
+            <span id="last-updated" class="last-updated">Not refreshed</span>
+            <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh jobs" title="Refresh jobs">↻</button>
+          </div>
+        </div>
+        <div id="jobs-state" class="state-box" role="status" aria-live="polite">Loading jobs…</div>
+        <div id="jobs-table-wrap" class="table-scroll" hidden>
+          <table class="jobs-table">
+            <thead>
+              <tr>
+                <th scope="col">Status</th>
+                <th scope="col">Progress</th>
+                <th scope="col">Source → Destination</th>
+                <th scope="col">Created</th>
+                <th scope="col">Updated</th>
+                <th scope="col">Attempt</th>
+                <th scope="col">Errors</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>LANCE FORMAT CONVERSION</span>
+      <span>Automatic refresh · 3s</span>
+    </footer>
+  </body>
+</html>

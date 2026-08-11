@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion::prelude::SessionContext;
 use lance::dataset::{ExternalBlobMode, InsertBuilder, WriteMode, WriteParams};
 use lance_conversion_core::{
     job::{Job, JobKind, JobProgress},
@@ -46,24 +46,7 @@ impl Converter {
         }
 
         let context = SessionContext::new();
-        let prepared = source.prepare(&context).await?;
-        let mut locations = prepared.parquet_files.into_iter();
-        let first_location = locations.next().ok_or_else(|| {
-            ConversionError::InvalidSource("source contains no Parquet locations".to_owned())
-        })?;
-        let mut dataframe = context
-            .read_parquet(first_location, ParquetReadOptions::default())
-            .await
-            .map_err(|error| ConversionError::Read(error.to_string()))?;
-        for location in locations {
-            let next = context
-                .read_parquet(location, ParquetReadOptions::default())
-                .await
-                .map_err(|error| ConversionError::Read(error.to_string()))?;
-            dataframe = dataframe
-                .union(next)
-                .map_err(|error| ConversionError::Read(error.to_string()))?;
-        }
+        let dataframe = source::prepare_dataframe(source.as_ref(), &context).await?;
         validation::validate_schema(dataframe.schema().fields())?;
         let stream = dataframe
             .execute_stream()

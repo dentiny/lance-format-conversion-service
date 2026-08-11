@@ -3604,6 +3604,7 @@ dependencies = [
  "axum",
  "clap",
  "lance-conversion-core",
+ "lance-converter",
  "lance-job-store",
  "lance-job-store-factory",
  "lance-job-store-sqlite",
