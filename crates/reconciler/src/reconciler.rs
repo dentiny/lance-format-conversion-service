@@ -140,6 +140,8 @@ mod tests {
         },
         parquet::arrow::ArrowWriter,
     };
+    use futures::TryStreamExt;
+    use lance::Dataset;
     use lance_conversion_core::{
         job::{ClaimedJob, JobKind, JobStatus, NewJob},
         location::DatasetLocation,
@@ -185,6 +187,31 @@ mod tests {
         assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT);
         assert_eq!(job.progress.rows_total, EXPECTED_ROW_COUNT);
         assert!(job.error_reasons.is_empty());
+
+        let output = Dataset::open(destination.to_string_lossy().as_ref())
+            .await
+            .unwrap()
+            .scan()
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let values = output
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(values, TEST_VALUES);
     }
 
     #[tokio::test]

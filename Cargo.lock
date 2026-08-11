@@ -3270,6 +3270,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "datafusion",
+ "futures",
+ "lance",
  "lance-conversion-core",
  "lance-converter",
  "lance-job-store",
