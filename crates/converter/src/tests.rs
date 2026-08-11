@@ -86,6 +86,7 @@ async fn converts_local_parquet_directory() {
         dataset.schema().field("value").unwrap().data_type(),
         DataType::Int64
     );
+    assert!(!dataset.schema().field("value").unwrap().nullable);
 }
 
 #[tokio::test]
