@@ -64,7 +64,7 @@ impl Converter {
                 .union(next)
                 .map_err(|error| ConversionError::Read(error.to_string()))?;
         }
-        schema::validate(dataframe.schema().fields())?;
+        validation::validate_schema(dataframe.schema().fields())?;
         let stream = dataframe
             .execute_stream()
             .await
