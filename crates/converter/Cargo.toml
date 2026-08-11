@@ -25,4 +25,5 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

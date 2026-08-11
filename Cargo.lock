@@ -2827,6 +2827,7 @@ dependencies = [
  "object_store",
  "reqwest 0.13.4",
  "serde",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

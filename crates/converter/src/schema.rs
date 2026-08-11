@@ -87,3 +87,39 @@ fn validate_type(column: &str, data_type: &DataType) -> Result<(), ConversionErr
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use datafusion::arrow::datatypes::{DataType, Field};
+
+    use super::validate;
+    use crate::ConversionError;
+
+    #[test]
+    fn accepts_nested_lists() {
+        let nested = Field::new(
+            "nested",
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                true,
+            ))),
+            true,
+        );
+        validate(&[Arc::new(nested)]).unwrap();
+    }
+
+    #[test]
+    fn rejects_variant_metadata() {
+        let variant = Field::new("variant", DataType::Binary, true).with_metadata(HashMap::from([(
+            "PARQUET:logical_type".to_owned(),
+            "VARIANT".to_owned(),
+        )]));
+        assert!(matches!(
+            validate(&[Arc::new(variant)]),
+            Err(ConversionError::UnsupportedType(_))
+        ));
+    }
+}

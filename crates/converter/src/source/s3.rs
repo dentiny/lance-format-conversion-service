@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use datafusion::prelude::SessionContext;
-use futures::TryStreamExt;
+use futures::{TryStreamExt, future};
 use object_store::{
     ObjectStore, ObjectStoreExt, aws::AmazonS3, aws::AmazonS3Builder, path::Path as ObjectPath,
 };
@@ -23,12 +23,13 @@ pub(super) async fn prepare(
 
     let parquet_files = store
         .list(Some(&directory_prefix(&url)))
-        .try_filter_map(|metadata| async {
-            Ok(metadata
+        .try_filter_map(|metadata| {
+            let parquet = metadata
                 .location
                 .as_ref()
                 .ends_with(".parquet")
-                .then(|| format!("s3://{bucket}/{}", metadata.location)))
+                .then(|| format!("s3://{bucket}/{}", metadata.location));
+            future::ready(Ok(parquet))
         })
         .try_collect()
         .await

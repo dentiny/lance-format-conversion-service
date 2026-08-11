@@ -13,3 +13,5 @@ pub use progress::ConversionProgress;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod type_compatibility_tests;
