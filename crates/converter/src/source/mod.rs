@@ -4,7 +4,10 @@ mod nfs;
 mod s3;
 
 use async_trait::async_trait;
-use datafusion::prelude::SessionContext;
+use datafusion::{
+    dataframe::DataFrame,
+    prelude::{ParquetReadOptions, SessionContext},
+};
 use lance_conversion_core::location::{DatasetLocation, LocationKind};
 
 use crate::ConversionError;
@@ -67,4 +70,30 @@ impl dyn SourceDataset {
             LocationKind::HuggingFace => Box::new(hugging_face::HuggingFaceDataset::new(source)),
         }
     }
+}
+
+/// Prepares a source and reads all of its Parquet files as one `DataFusion` frame.
+pub(crate) async fn prepare_dataframe(
+    source: &dyn SourceDataset,
+    context: &SessionContext,
+) -> Result<DataFrame, ConversionError> {
+    let prepared = source.prepare(context).await?;
+    let mut locations = prepared.parquet_files.into_iter();
+    let first_location = locations.next().ok_or_else(|| {
+        ConversionError::InvalidSource("source contains no Parquet locations".to_owned())
+    })?;
+    let mut dataframe = context
+        .read_parquet(first_location, ParquetReadOptions::default())
+        .await
+        .map_err(|error| ConversionError::Read(error.to_string()))?;
+    for location in locations {
+        let next = context
+            .read_parquet(location, ParquetReadOptions::default())
+            .await
+            .map_err(|error| ConversionError::Read(error.to_string()))?;
+        dataframe = dataframe
+            .union(next)
+            .map_err(|error| ConversionError::Read(error.to_string()))?;
+    }
+    Ok(dataframe)
 }

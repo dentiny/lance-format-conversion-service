@@ -14,6 +14,7 @@ workspace = true
 axum.workspace = true
 clap.workspace = true
 lance-conversion-core.workspace = true
+lance-converter.workspace = true
 lance-job-store.workspace = true
 lance-job-store-factory.workspace = true
 serde.workspace = true

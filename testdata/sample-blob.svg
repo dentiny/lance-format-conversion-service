@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <rect width="320" height="180" rx="16" fill="#0b0e13"/>
+  <path d="M70 130 125 65l38 43 30-31 57 53H70Z" fill="#75d3a6"/>
+  <circle cx="225" cy="50" r="17" fill="#62c8d4"/>
+  <text x="160" y="157" fill="#d8dee9" font-family="monospace" font-size="14" text-anchor="middle">Lance Blob V2</text>
+</svg>
