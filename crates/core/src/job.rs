@@ -78,8 +78,6 @@ pub struct NewJob {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobProgress {
-    pub source_bytes_read: u64,
-    pub lance_bytes_written: u64,
     pub rows_read: u64,
     pub rows_written: u64,
     pub rows_total: u64,

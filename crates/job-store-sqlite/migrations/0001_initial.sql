@@ -27,8 +27,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     lease_expiration_timestamp_ms INTEGER,
 
     -- Job progress.
-    source_bytes_read INTEGER NOT NULL DEFAULT 0 CHECK (source_bytes_read >= 0),
-    lance_bytes_written INTEGER NOT NULL DEFAULT 0 CHECK (lance_bytes_written >= 0),
     rows_read INTEGER NOT NULL DEFAULT 0 CHECK (rows_read >= 0),
     rows_written INTEGER NOT NULL DEFAULT 0 CHECK (rows_written >= 0),
     rows_total INTEGER NOT NULL DEFAULT 0 CHECK (rows_total >= 0),

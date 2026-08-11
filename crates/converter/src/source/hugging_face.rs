@@ -4,9 +4,9 @@ use std::{
 };
 
 use futures::TryStreamExt;
+use reqwest::Url;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
-use url::Url;
 
 use super::PreparedSource;
 use crate::ConversionError;
@@ -45,7 +45,6 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
     }
 
     let temporary_directory = create_temporary_directory().await?;
-    let mut source_bytes = 0_u64;
     for (index, parquet_file) in response.parquet_files.into_iter().enumerate() {
         let mut request = client.get(parquet_file.url);
         if let Ok(token) = std::env::var("HF_TOKEN") {
@@ -66,11 +65,6 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
             .await
             .map_err(|error| ConversionError::Read(error.to_string()))?
         {
-            let chunk_size = u64::try_from(chunk.len())
-                .map_err(|error| ConversionError::Read(error.to_string()))?;
-            source_bytes = source_bytes
-                .checked_add(chunk_size)
-                .ok_or_else(|| ConversionError::Read("source byte count overflow".to_owned()))?;
             destination
                 .write_all(&chunk)
                 .await
@@ -83,7 +77,6 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
     }
     Ok(PreparedSource {
         parquet_uri: temporary_directory.to_string_lossy().into_owned(),
-        source_bytes,
         temporary_directory: Some(temporary_directory),
     })
 }

@@ -17,9 +17,3 @@ pub enum ConversionError {
     #[error("move source deletion failed after conversion: {0}")]
     Delete(String),
 }
-
-impl From<url::ParseError> for ConversionError {
-    fn from(error: url::ParseError) -> Self {
-        Self::InvalidSource(error.to_string())
-    }
-}

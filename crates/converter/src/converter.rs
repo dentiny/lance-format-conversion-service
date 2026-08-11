@@ -89,14 +89,14 @@ impl Converter {
         let write_result = InsertBuilder::new(job.destination_uri.as_str())
             .with_params(&params)
             .progress(move |stats| {
-                callback_progress.record_write(stats.bytes_written, stats.rows_written);
+                callback_progress.record_write(stats.rows_written);
             })
             .execute_stream(stream)
             .await;
         source::cleanup(&prepared).await?;
         write_result.map_err(|error| ConversionError::Write(error.to_string()))?;
 
-        progress.finish(prepared.source_bytes);
+        progress.finish();
         if job.kind == JobKind::Move {
             source::delete(&source).await?;
         }

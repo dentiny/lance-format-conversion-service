@@ -4,11 +4,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
+use datafusion::{
+    arrow::{
+        array::{Int64Array, RecordBatch},
+        datatypes::{DataType, Field, Schema},
+    },
+    parquet::arrow::ArrowWriter,
+};
 use lance::Dataset;
 use lance_conversion_core::job::{Job, JobKind, JobProgress, JobStatus};
-use parquet::arrow::ArrowWriter;
 
 use crate::{ConversionProgress, Converter, ConverterConfig};
 
@@ -59,7 +63,6 @@ async fn converts_local_parquet_directory() {
     assert_eq!(progress.rows_read, 3);
     assert_eq!(progress.rows_written, 3);
     assert_eq!(progress.rows_total, 3);
-    assert!(progress.source_bytes_read > 0);
     assert!(
         Dataset::open(destination.to_string_lossy().as_ref())
             .await

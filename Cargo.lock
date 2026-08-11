@@ -2817,8 +2817,6 @@ dependencies = [
 name = "lance-converter"
 version = "0.1.0"
 dependencies = [
- "arrow-array",
- "arrow-schema",
  "datafusion",
  "futures",
  "lance",
@@ -2826,12 +2824,10 @@ dependencies = [
  "lance-file",
  "lance-table",
  "object_store",
- "parquet",
  "reqwest 0.13.4",
  "serde",
  "thiserror",
  "tokio",
- "url",
 ]
 
 [[package]]

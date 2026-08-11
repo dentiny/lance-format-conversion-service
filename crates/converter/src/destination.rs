@@ -3,7 +3,7 @@ use std::sync::Arc;
 use lance::{dataset::WriteParams, io::ObjectStoreParams};
 use lance_table::io::commit::ConditionalPutCommitHandler;
 use object_store::{ObjectStore, aws::AmazonS3Builder};
-use url::Url;
+use reqwest::Url;
 
 use crate::ConversionError;
 

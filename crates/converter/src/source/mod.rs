@@ -10,7 +10,6 @@ use crate::ConversionError;
 
 pub(crate) struct PreparedSource {
     pub(crate) parquet_uri: String,
-    pub(crate) source_bytes: u64,
     pub(crate) temporary_directory: Option<PathBuf>,
 }
 
