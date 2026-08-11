@@ -1,0 +1,29 @@
+[package]
+name = "lance-converter"
+description = "Parquet and Hugging Face conversion engine for Lance datasets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+datafusion.workspace = true
+futures.workspace = true
+lance.workspace = true
+lance-conversion-core.workspace = true
+lance-file.workspace = true
+lance-table.workspace = true
+object_store.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

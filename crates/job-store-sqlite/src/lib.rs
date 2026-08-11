@@ -20,12 +20,9 @@ const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const JOB_COLUMNS: &str = "creator, kind, source_uri, destination_uri, \
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json, \
-    lease_expiration_timestamp_ms, source_bytes_read, lance_bytes_written, rows_read, \
-    rows_written, rows_total";
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total";
 
 struct SqlProgress {
-    source_bytes_read: i64,
-    lance_bytes_written: i64,
     rows_read: i64,
     rows_written: i64,
     rows_total: i64,
@@ -258,11 +255,9 @@ impl JobStore for SqliteJobStore {
                     "UPDATE jobs
                      SET lease_expiration_timestamp_ms = ?3,
                          update_timestamp_ms = ?4,
-                         source_bytes_read = ?5,
-                         lance_bytes_written = ?6,
-                         rows_read = ?7,
-                         rows_written = ?8,
-                         rows_total = ?9
+                         rows_read = ?5,
+                         rows_written = ?6,
+                         rows_total = ?7
                      WHERE destination_uri = ?1
                        AND status = 'running'
                        AND attempt = ?2
@@ -272,8 +267,6 @@ impl JobStore for SqliteJobStore {
                         i64::from(update.attempt),
                         lease_expiration_timestamp_ms,
                         now_ms,
-                        progress.source_bytes_read,
-                        progress.lance_bytes_written,
                         progress.rows_read,
                         progress.rows_written,
                         progress.rows_total,
@@ -309,11 +302,9 @@ impl JobStore for SqliteJobStore {
                 .execute(
                     "UPDATE jobs
                      SET update_timestamp_ms = ?3,
-                         source_bytes_read = ?4,
-                         lance_bytes_written = ?5,
-                         rows_read = ?6,
-                         rows_written = ?7,
-                         rows_total = ?8
+                         rows_read = ?4,
+                         rows_written = ?5,
+                         rows_total = ?6
                      WHERE destination_uri = ?1
                        AND status = 'running'
                        AND attempt = ?2
@@ -322,8 +313,6 @@ impl JobStore for SqliteJobStore {
                         &update.destination_uri,
                         i64::from(update.attempt),
                         now_ms,
-                        progress.source_bytes_read,
-                        progress.lance_bytes_written,
                         progress.rows_read,
                         progress.rows_written,
                         progress.rows_total,
@@ -391,11 +380,9 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         error_reasons,
         lease_expiration_timestamp_ms: row.get(9)?,
         progress: JobProgress {
-            source_bytes_read: i64_to_u64(row.get(10)?, 10)?,
-            lance_bytes_written: i64_to_u64(row.get(11)?, 11)?,
-            rows_read: i64_to_u64(row.get(12)?, 12)?,
-            rows_written: i64_to_u64(row.get(13)?, 13)?,
-            rows_total: i64_to_u64(row.get(14)?, 14)?,
+            rows_read: i64_to_u64(row.get(10)?, 10)?,
+            rows_written: i64_to_u64(row.get(11)?, 11)?,
+            rows_total: i64_to_u64(row.get(12)?, 12)?,
         },
     })
 }
@@ -428,8 +415,6 @@ fn usize_to_i64(value: usize) -> Result<i64, StoreError> {
 
 fn progress_as_i64(progress: JobProgress) -> Result<SqlProgress, StoreError> {
     Ok(SqlProgress {
-        source_bytes_read: u64_as_i64(progress.source_bytes_read)?,
-        lance_bytes_written: u64_as_i64(progress.lance_bytes_written)?,
         rows_read: u64_as_i64(progress.rows_read)?,
         rows_written: u64_as_i64(progress.rows_written)?,
         rows_total: u64_as_i64(progress.rows_total)?,
@@ -577,8 +562,6 @@ mod tests {
         let destination_uri = claim.job.destination_uri.clone();
 
         let progress = JobProgress {
-            source_bytes_read: 100,
-            lance_bytes_written: 80,
             rows_read: 10,
             rows_written: 10,
             rows_total: 20,
