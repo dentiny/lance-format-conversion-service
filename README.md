@@ -132,24 +132,24 @@ mkdir -p data
 Start the web control plane in the first terminal:
 
 ```shell
-cargo run -p lance-web -- \
-  --listen-address 127.0.0.1:8080 \
-  --database-url sqlite://./data/service.db
+LISTEN_ADDRESS=127.0.0.1:8080 \
+DATABASE_URL=sqlite://./data/service.db \
+cargo run -p lance-web
 ```
 
 Start the reconciler against the same database in a second terminal:
 
 ```shell
-cargo run -p lance-reconciler -- \
-  --database-url sqlite://./data/service.db \
-  --worker-count 4 \
-  --poll-interval-ms 1000 \
-  --lease-duration-secs 900 \
-  --lease-renew-interval-secs 300 \
-  --progress-interval-secs 30 \
-  --target-lance-file-size-mib 512 \
-  --blob-inline-threshold-mib 2 \
-  --blob-dedicated-threshold-mib 32
+DATABASE_URL=sqlite://./data/service.db \
+WORKER_COUNT=4 \
+POLL_INTERVAL_MS=1000 \
+LEASE_DURATION_SECS=900 \
+LEASE_RENEW_INTERVAL_SECS=300 \
+PROGRESS_INTERVAL_SECS=30 \
+TARGET_LANCE_FILE_SIZE_MIB=512 \
+BLOB_INLINE_THRESHOLD_MIB=2 \
+BLOB_DEDICATED_THRESHOLD_MIB=32 \
+cargo run -p lance-reconciler
 ```
 
 Both processes are required: `lance-web` accepts and displays jobs, while

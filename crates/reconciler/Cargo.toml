@@ -11,7 +11,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-clap.workspace = true
 lance-conversion-core.workspace = true
 lance-converter.workspace = true
 lance-job-store.workspace = true
@@ -20,7 +19,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
-datafusion.workspace = true
+arrow.workspace = true
 futures.workspace = true
 lance.workspace = true
 lance-job-store-sqlite.workspace = true

@@ -37,17 +37,14 @@ impl Converter {
         job: &Job,
         progress: Arc<ConversionProgress>,
     ) -> Result<JobProgress, ConversionError> {
-        let (source, dataframe) = source::open_validated_dataframe(&job.source_uri).await?;
+        let (source, prepared) = source::open_validated_source(&job.source_uri).await?;
         if job.kind == JobKind::Move && source.copy_only() {
             return Err(ConversionError::InvalidSource(
                 "Hugging Face datasets are copy-only".to_owned(),
             ));
         }
 
-        let stream = dataframe
-            .execute_stream()
-            .await
-            .map_err(|error| ConversionError::Read(error.to_string()))?;
+        let stream = prepared.into_stream();
 
         let stream = blob::apply_blob_columns(
             stream,

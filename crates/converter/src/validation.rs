@@ -1,10 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
-use datafusion::{
-    arrow::datatypes::{DataType, Field},
-    error::DataFusionError,
-};
-use lance::Dataset;
+use arrow::datatypes::{DataType, Field};
+use lance::{Dataset, deps::datafusion::error::DataFusionError};
 use lance_conversion_core::job::BlobColumnSpec;
 
 use crate::ConversionError;
@@ -139,7 +136,7 @@ fn validate_type(column: &str, data_type: &DataType) -> Result<(), ConversionErr
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use datafusion::arrow::datatypes::{DataType, Field};
+    use arrow::datatypes::{DataType, Field};
     use lance_conversion_core::job::BlobColumnSpec;
 
     use super::{validate_blob_columns, validate_schema};

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::arrow::{
+use arrow::{
     array::{ArrayRef, RecordBatch, StringDictionaryBuilder, new_null_array},
     datatypes::{DataType, Field, Fields, Int32Type, Schema, TimeUnit},
 };

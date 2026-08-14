@@ -1,10 +1,11 @@
 use std::{error::Error, path::Path};
 
-use datafusion::{arrow::array::RecordBatch, parquet::arrow::ArrowWriter};
+use arrow::array::RecordBatch;
 use lance_conversion_core::{
     job::{Job, JobKind, JobProgress, JobStatus, NewJob},
     location::{DatasetLocation, LocationError},
 };
+use parquet::arrow::ArrowWriter;
 
 pub type FixtureResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 

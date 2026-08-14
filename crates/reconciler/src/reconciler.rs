@@ -129,8 +129,7 @@ pub enum ReconcilerError {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use clap::Parser;
-    use datafusion::arrow::{
+    use arrow::{
         array::{Int64Array, RecordBatch},
         datatypes::{DataType, Field, Schema},
     };
@@ -301,7 +300,7 @@ mod tests {
     }
 
     async fn run_claimed_job(store: &Arc<SqliteJobStore>, job: Job) {
-        let config = Arc::new(Config::parse_from(["lance-reconciler"]));
+        let config = Arc::new(Config::default());
         let converter = Arc::new(Converter::new(config.converter_config()).unwrap());
         let trait_store: Arc<dyn JobStore> = store.clone();
         run_job(

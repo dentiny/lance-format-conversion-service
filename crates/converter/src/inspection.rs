@@ -17,17 +17,17 @@ pub struct SourceColumn {
     pub blob_eligible: bool,
 }
 
-/// Inspects the validated `DataFusion` union schema for a conversion source.
+/// Inspects the validated common Parquet schema for a conversion source.
 ///
 /// # Errors
 ///
 /// Returns an error when the URI is invalid, the source cannot be prepared or
-/// read, its Parquet schemas cannot be unioned, or its schema is unsupported.
+/// read, its Parquet schemas do not match, or its schema is unsupported.
 pub async fn inspect_source_schema(
     source_uri: &str,
 ) -> Result<SourceSchemaInspection, ConversionError> {
-    let (_, dataframe) = source::open_validated_dataframe(source_uri).await?;
-    let fields = dataframe.schema().fields();
+    let (_, prepared) = source::open_validated_source(source_uri).await?;
+    let fields = prepared.schema().fields();
 
     let columns = fields
         .iter()
@@ -45,7 +45,7 @@ pub async fn inspect_source_schema(
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::{
+    use arrow::{
         array::{Int64Array, RecordBatch, StringArray, new_empty_array},
         datatypes::{DataType, Field, Schema},
     };

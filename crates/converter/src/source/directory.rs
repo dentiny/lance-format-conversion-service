@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use datafusion::prelude::SessionContext;
 use lance_conversion_core::location::{DatasetLocation, LocationKind};
 
 use super::{PreparedSource, SourceDataset, nfs, s3};
@@ -21,10 +20,10 @@ impl SourceDataset for DirectorySource {
         false
     }
 
-    async fn prepare(&self, context: &SessionContext) -> Result<PreparedSource, ConversionError> {
+    async fn prepare(&self) -> Result<PreparedSource, ConversionError> {
         match self.location.kind() {
             LocationKind::Nfs => nfs::prepare(self.location.uri()).await,
-            LocationKind::S3 => s3::prepare(context, self.location.uri()).await,
+            LocationKind::S3 => s3::prepare(self.location.uri()).await,
             LocationKind::HuggingFace => Err(ConversionError::InvalidSource(
                 "expected a directory-based source".to_owned(),
             )),

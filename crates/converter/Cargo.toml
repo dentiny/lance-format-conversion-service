@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-datafusion.workspace = true
+arrow.workspace = true
 futures.workspace = true
 lance = { workspace = true, features = ["aws"] }
 lance-conversion-core.workspace = true
@@ -20,6 +20,7 @@ lance-file.workspace = true
 lance-index.workspace = true
 lance-linalg.workspace = true
 object_store.workspace = true
+parquet.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 thiserror.workspace = true

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use datafusion::prelude::SessionContext;
 use futures::{TryStreamExt, future};
 use object_store::{
     ObjectStore, ObjectStoreExt, aws::AmazonS3, aws::AmazonS3Builder, path::Path as ObjectPath,
@@ -9,32 +8,27 @@ use reqwest::Url;
 
 use crate::ConversionError;
 
-use super::PreparedSource;
+use super::{PreparedParquetFile, PreparedSource};
 
-pub(super) async fn prepare(
-    context: &SessionContext,
-    source_uri: &str,
-) -> Result<PreparedSource, ConversionError> {
+pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, ConversionError> {
     let (url, bucket) = parse_location(source_uri)?;
-    let store = Arc::new(build_store(&bucket).map_err(|error| read_error(&error))?);
-    let root = Url::parse(&format!("s3://{bucket}"))
-        .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-    context.register_object_store(&root, store.clone());
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(build_store(&bucket).map_err(|error| read_error(&error))?);
 
     let parquet_files = store
         .list(Some(&directory_prefix(&url)))
         .try_filter_map(|metadata| {
-            let parquet = metadata
-                .location
-                .as_ref()
-                .ends_with(".parquet")
-                .then(|| format!("s3://{bucket}/{}", metadata.location));
+            let store = Arc::clone(&store);
+            let parquet = metadata.location.as_ref().ends_with(".parquet").then(|| {
+                let location = format!("s3://{bucket}/{}", metadata.location);
+                PreparedParquetFile::object(store, metadata.location, metadata.size, location)
+            });
             future::ready(Ok(parquet))
         })
         .try_collect()
         .await
         .map_err(|error| read_error(&error))?;
-    PreparedSource::new(parquet_files)
+    PreparedSource::new(parquet_files).await
 }
 
 pub(super) async fn delete(source_uri: &str) -> Result<(), ConversionError> {

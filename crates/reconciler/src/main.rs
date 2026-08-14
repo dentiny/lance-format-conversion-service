@@ -1,6 +1,5 @@
 use std::{error::Error, sync::Arc};
 
-use clap::Parser;
 use config::Config;
 use lance_converter::Converter;
 use lance_job_store_factory::connect;
@@ -11,7 +10,7 @@ mod reconciler;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::parse();
+    let config = Config::from_env()?;
     config.validate()?;
 
     let store = connect(&config.database_url).await?;

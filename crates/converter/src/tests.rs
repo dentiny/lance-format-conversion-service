@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::arrow::{
+use arrow::{
     array::{
         Array, Int64Array, RecordBatch, StringArray,
         builder::{Int64Builder, ListBuilder},
@@ -13,7 +13,7 @@ use lance_conversion_core::job::{BlobColumnSpec, IndexSpec, IndexType};
 use lance_test_support::{running_job, write_parquet};
 use tempfile::TempDir;
 
-use crate::{ConversionProgress, Converter, ConverterConfig};
+use crate::{ConversionError, ConversionProgress, Converter, ConverterConfig};
 
 const TARGET_FILE_SIZE_MIB: u64 = 512;
 const BLOB_INLINE_THRESHOLD_MIB: u64 = 2;
@@ -67,6 +67,95 @@ async fn converts_local_parquet_directory() {
         DataType::Int64
     );
     assert!(!dataset.schema().field("value").unwrap().nullable);
+}
+
+#[tokio::test]
+async fn converts_matching_parquet_files_in_sorted_order() {
+    let temp_dir = TempDir::new().unwrap();
+    let source = temp_dir.path().join("source");
+    let destination = temp_dir.path().join("dataset.lance");
+    tokio::fs::create_dir(&source).await.unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]));
+    for (file_name, value) in [("part-b.parquet", 2), ("part-a.parquet", 1)] {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![value]))],
+        )
+        .unwrap();
+        write_parquet(source.join(file_name), &batch).await.unwrap();
+    }
+
+    let progress = Converter::new(test_config())
+        .unwrap()
+        .convert(
+            &running_job(&source, &destination),
+            Arc::new(ConversionProgress::default()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(progress.rows_total, 2);
+    let dataset = Dataset::open(destination.to_string_lossy().as_ref())
+        .await
+        .unwrap();
+    let values = dataset
+        .scan()
+        .try_into_stream()
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .values()
+                .iter()
+                .copied()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(values, [1, 2]);
+}
+
+#[tokio::test]
+async fn rejects_mismatched_parquet_file_schemas() {
+    let temp_dir = TempDir::new().unwrap();
+    let source = temp_dir.path().join("source");
+    let destination = temp_dir.path().join("dataset.lance");
+    tokio::fs::create_dir(&source).await.unwrap();
+    let integers =
+        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![1])) as _)]).unwrap();
+    let strings =
+        RecordBatch::try_from_iter([("value", Arc::new(StringArray::from(vec!["one"])) as _)])
+            .unwrap();
+    write_parquet(source.join("part-a.parquet"), &integers)
+        .await
+        .unwrap();
+    write_parquet(source.join("part-b.parquet"), &strings)
+        .await
+        .unwrap();
+
+    let error = Converter::new(test_config())
+        .unwrap()
+        .convert(
+            &running_job(&source, &destination),
+            Arc::new(ConversionProgress::default()),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ConversionError::Validation(message) if message.contains("does not match"))
+    );
+    assert!(!destination.exists());
 }
 
 #[tokio::test]

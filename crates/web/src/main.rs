@@ -1,12 +1,11 @@
 use std::error::Error;
 
-use clap::Parser;
 use lance_job_store_factory::connect;
 use lance_web::{config::Config, router};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = Config::parse();
+    let config = Config::from_env()?;
 
     let store = connect(&config.database_url).await?;
     let listener = tokio::net::TcpListener::bind(config.listen_address).await?;

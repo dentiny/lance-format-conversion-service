@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
-datafusion.workspace = true
+arrow.workspace = true
 lance-conversion-core.workspace = true
+parquet.workspace = true
 tokio = { workspace = true, features = ["fs"] }

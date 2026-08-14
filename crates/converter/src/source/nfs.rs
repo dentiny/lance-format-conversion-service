@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ConversionError;
 
-use super::PreparedSource;
+use super::{PreparedParquetFile, PreparedSource};
 
 pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, ConversionError> {
     let source = PathBuf::from(source_uri);
@@ -15,7 +15,7 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
     if metadata.is_dir() {
         directories.push(source);
     } else if is_parquet(&source) {
-        parquet_files.push(path_to_string(source)?);
+        parquet_files.push(PreparedParquetFile::local(source)?);
     }
 
     while let Some(directory) = directories.pop() {
@@ -34,12 +34,12 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
             if file_type.is_dir() {
                 directories.push(entry.path());
             } else if file_type.is_file() && is_parquet(&entry.path()) {
-                parquet_files.push(path_to_string(entry.path())?);
+                parquet_files.push(PreparedParquetFile::local(entry.path())?);
             }
         }
     }
 
-    PreparedSource::new(parquet_files)
+    PreparedSource::new(parquet_files).await
 }
 
 pub(super) async fn delete(source_uri: &str) -> Result<(), ConversionError> {
@@ -61,12 +61,6 @@ pub(super) async fn delete(source_uri: &str) -> Result<(), ConversionError> {
 fn is_parquet(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "parquet")
-}
-
-fn path_to_string(path: PathBuf) -> Result<String, ConversionError> {
-    path.into_os_string()
-        .into_string()
-        .map_err(|_| ConversionError::InvalidSource("Parquet path is not valid UTF-8".to_owned()))
 }
 
 fn read_error(error: &std::io::Error) -> ConversionError {

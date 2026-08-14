@@ -1,4 +1,4 @@
-use datafusion::arrow::datatypes::DataType;
+use arrow::datatypes::DataType;
 use lance::{Dataset, index::DatasetIndexExt, index::vector::VectorIndexParams};
 use lance_conversion_core::job::{IndexSpec, IndexType as JobIndexType};
 use lance_index::{
@@ -196,7 +196,7 @@ fn product_subvectors(dimension: usize) -> usize {
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::arrow::datatypes::{DataType, Field};
+    use arrow::datatypes::{DataType, Field};
     use lance_conversion_core::job::IndexType as JobIndexType;
     use lance_index::IndexType;
 
