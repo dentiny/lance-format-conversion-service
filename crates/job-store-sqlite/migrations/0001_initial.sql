@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS jobs (
     -- Job identity and conversion request.
     creator TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('copy', 'move')),
     source_uri TEXT NOT NULL,
     destination_uri TEXT PRIMARY KEY,
 

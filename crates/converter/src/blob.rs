@@ -1,14 +1,14 @@
 use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
 
-use datafusion::{
-    arrow::{
-        array::{Array, ArrayRef, LargeStringArray, RecordBatch, StringArray, StringViewArray},
-        datatypes::{DataType, Schema},
-    },
+use arrow::{
+    array::{Array, ArrayRef, LargeStringArray, RecordBatch, StringArray, StringViewArray},
+    datatypes::{DataType, Schema},
+};
+use futures::StreamExt;
+use lance::deps::datafusion::{
     error::DataFusionError,
     physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter},
 };
-use futures::StreamExt;
 use lance::{BlobArrayBuilder, BlobFieldOptions, blob_field_with_options};
 use lance_conversion_core::job::BlobColumnSpec;
 

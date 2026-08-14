@@ -1,0 +1,18 @@
+[package]
+name = "lance-test-support"
+description = "Shared test fixtures for the Lance conversion workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow.workspace = true
+lance-conversion-core.workspace = true
+parquet.workspace = true
+tokio = { workspace = true, features = ["fs"] }

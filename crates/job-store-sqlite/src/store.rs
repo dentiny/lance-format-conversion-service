@@ -12,8 +12,8 @@ use sqlx::{
 };
 
 use lance_conversion_core::job::{
-    BlobColumnSpec, ClaimedJob, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError,
-    JobProgress, JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
+    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError, JobProgress,
+    JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
@@ -21,12 +21,12 @@ const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
 const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SELECT_JOBS_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
+const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
     blob_columns_json, indices_json
     FROM jobs";
-const LOAD_JOB_SQL: &str = "SELECT creator, kind, source_uri, destination_uri,
+const LOAD_JOB_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
     blob_columns_json, indices_json
@@ -127,12 +127,11 @@ impl JobStore for SqliteJobStore {
         let mut transaction = self.begin_immediate().await?;
         sqlx::query(
             "INSERT INTO jobs(
-                creator, kind, source_uri, destination_uri, status,
+                creator, source_uri, destination_uri, status,
                 creation_timestamp_ms, update_timestamp_ms, blob_columns_json, indices_json
-             ) VALUES (?1, ?2, ?3, ?4, 'queuing', ?5, ?5, ?6, ?7)",
+             ) VALUES (?1, ?2, ?3, 'queuing', ?4, ?4, ?5, ?6)",
         )
         .bind(job.creator)
-        .bind(job.kind.to_string())
         .bind(job.source.uri())
         .bind(job.destination.uri())
         .bind(job.creation_timestamp_ms)
@@ -208,7 +207,7 @@ impl JobStore for SqliteJobStore {
         &self,
         limit: usize,
         convert_lease_duration_ms: i64,
-    ) -> Result<Vec<ClaimedJob>, StoreError> {
+    ) -> Result<Vec<Job>, StoreError> {
         if limit == 0 || convert_lease_duration_ms <= 0 {
             return Ok(Vec::new());
         }
@@ -293,7 +292,7 @@ impl JobStore for SqliteJobStore {
             .await
             .map_err(database_error)?;
             let job = load_job(&mut transaction, &destination_uri).await?;
-            claimed.push(ClaimedJob { job });
+            claimed.push(job);
         }
 
         transaction.commit().await.map_err(database_error)?;
@@ -543,7 +542,6 @@ fn row_to_job(row: &SqliteRow) -> Result<Job, StoreError> {
         .map_err(database_error)?;
     Ok(Job {
         creator: row.try_get("creator").map_err(database_error)?,
-        kind: parse_value(&row.try_get::<String, _>("kind").map_err(database_error)?)?,
         source_uri: row.try_get("source_uri").map_err(database_error)?,
         destination_uri: row.try_get("destination_uri").map_err(database_error)?,
         blob_columns: deserialize_json::<Vec<BlobColumnSpec>>(&blob_columns_json)?,

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use lance_conversion_core::job::{
-    ClaimedJob, CompletionUpdate, FailureUpdate, Job, LeaseUpdate, NewJob, ProgressUpdate,
+    CompletionUpdate, FailureUpdate, Job, LeaseUpdate, NewJob, ProgressUpdate,
 };
 
 /// Filters, orders, and bounds a job query.
@@ -64,7 +64,7 @@ pub trait JobStore: Send + Sync {
         &self,
         limit: usize,
         convert_lease_duration_ms: i64,
-    ) -> Result<Vec<ClaimedJob>, StoreError>;
+    ) -> Result<Vec<Job>, StoreError>;
 
     /// Extends an unexpired running job's lease and updates its progress
     /// snapshot.

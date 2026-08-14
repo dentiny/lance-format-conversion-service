@@ -3,8 +3,10 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use datafusion::physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter};
 use futures::StreamExt;
+use lance::deps::datafusion::physical_plan::{
+    SendableRecordBatchStream, stream::RecordBatchStreamAdapter,
+};
 use lance_conversion_core::job::JobProgress;
 
 #[derive(Default)]

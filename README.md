@@ -46,7 +46,7 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - Write Lance datasets to NFS-mounted paths or AWS S3.
 - Stream Hugging Face Parquet files directly over HTTP without staging them on
   local disk.
-- Run either a `copy` job or a `move` job. Hugging Face sources are copy-only.
+- Source datasets are read-only and are never deleted by this service.
 
 ### Schema, blobs, and indexes
 
@@ -54,7 +54,7 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - Select URL columns for Blob V2 ingestion. Lance fetches the referenced bytes
   and stores each value inline, packed, or in a dedicated blob file according
   to the configured thresholds.
-- Create scalar, full-text, spatial, and vector Lance indexes after ingestion.
+- Create scalar, full-text, and vector Lance indexes after ingestion.
 - Validate unsupported Arrow types and selected blob columns before writing.
 - Verify the destination row count before marking a job as successful.
 
@@ -80,13 +80,13 @@ files into a versioned dataset designed for multimodal and AI workloads:
 
 - `crates/core`: job models and dataset location classification
 - `crates/converter`: Parquet and Hugging Face readers, schema inspection,
-  validation, Lance writes, progress accounting, and move-source deletion
+  validation, Lance writes, and progress accounting
 - `crates/job-store`: object-safe `JobStore` interface and storage errors
 - `crates/job-store-factory`: database URL dispatch and backend construction
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
 - `crates/web`: `lance-web`, the HTTP job control plane and embedded UI
-- `crates/reconciler`: bounded polling, lease maintenance, progress
-  checkpointing, and conversion execution
+- [`crates/reconciler`](crates/reconciler/README.md): bounded polling, lease
+  maintenance, progress checkpointing, and conversion execution
 
 There are exactly two deployables: `lance-web` and `lance-reconciler`. There is
 no separate worker or maintenance process. The reconciler claims jobs and runs
@@ -132,24 +132,24 @@ mkdir -p data
 Start the web control plane in the first terminal:
 
 ```shell
-cargo run -p lance-web -- \
-  --listen-address 127.0.0.1:8080 \
-  --database-url sqlite://./data/service.db
+LISTEN_ADDRESS=127.0.0.1:8080 \
+DATABASE_URL=sqlite://./data/service.db \
+cargo run -p lance-web
 ```
 
 Start the reconciler against the same database in a second terminal:
 
 ```shell
-cargo run -p lance-reconciler -- \
-  --database-url sqlite://./data/service.db \
-  --worker-count 4 \
-  --poll-interval-ms 1000 \
-  --lease-duration-secs 900 \
-  --lease-renew-interval-secs 300 \
-  --progress-interval-secs 30 \
-  --target-lance-file-size-mib 512 \
-  --blob-inline-threshold-mib 2 \
-  --blob-dedicated-threshold-mib 32
+DATABASE_URL=sqlite://./data/service.db \
+WORKER_COUNT=4 \
+POLL_INTERVAL_MS=1000 \
+LEASE_DURATION_SECS=900 \
+LEASE_RENEW_INTERVAL_SECS=180 \
+PROGRESS_INTERVAL_SECS=30 \
+TARGET_LANCE_FILE_SIZE_MIB=512 \
+BLOB_INLINE_THRESHOLD_MIB=2 \
+BLOB_DEDICATED_THRESHOLD_MIB=32 \
+cargo run -p lance-reconciler
 ```
 
 Both processes are required: `lance-web` accepts and displays jobs, while
@@ -206,10 +206,9 @@ curl -X POST http://127.0.0.1:8080/v1/jobs \
   -d '{
     "creator":"test-user",
     "source_uri":"s3://source-bucket/datasets/images",
-    "kind":"copy",
     "destination_uri":"s3://destination-bucket/datasets/images.lance",
     "blob_columns":[{"column":"image_url"}],
-    "indices":[{"columns":["label"],"index_type":"bitmap"}]
+    "indices":[{"columns":["label"],"index_type":"scalar"}]
   }'
 ```
 

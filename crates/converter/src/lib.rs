@@ -1,7 +1,6 @@
 mod blob;
 mod config;
 mod converter;
-mod destination;
 mod error;
 mod indexes;
 mod inspection;

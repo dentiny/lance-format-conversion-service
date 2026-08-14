@@ -1,16 +1,17 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use datafusion::prelude::SessionContext;
 use lance_conversion_core::location::DatasetLocation;
-use object_store::{ClientOptions, http::HttpBuilder};
+use object_store::{
+    ClientOptions, ObjectStore, ObjectStoreExt, http::HttpBuilder, path::Path as ObjectPath,
+};
 use reqwest::{
     Url,
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
 
-use super::{PreparedSource, SourceDataset};
+use super::{PreparedParquetFile, PreparedSource, SourceDataset};
 use crate::ConversionError;
 
 const PARQUET_API_URL: &str = "https://datasets-server.huggingface.co/parquet";
@@ -27,25 +28,12 @@ impl HuggingFaceDataset {
 
 #[async_trait]
 impl SourceDataset for HuggingFaceDataset {
-    fn copy_only(&self) -> bool {
-        true
-    }
-
-    async fn prepare(&self, context: &SessionContext) -> Result<PreparedSource, ConversionError> {
-        prepare(context, self.location.uri()).await
-    }
-
-    async fn delete(&self) -> Result<(), ConversionError> {
-        Err(ConversionError::InvalidSource(
-            "Hugging Face datasets are copy-only".to_owned(),
-        ))
+    async fn prepare(&self) -> Result<PreparedSource, ConversionError> {
+        prepare(self.location.uri()).await
     }
 }
 
-async fn prepare(
-    context: &SessionContext,
-    source_uri: &str,
-) -> Result<PreparedSource, ConversionError> {
+async fn prepare(source_uri: &str) -> Result<PreparedSource, ConversionError> {
     let parsed = HuggingFaceLocation::parse(source_uri)?;
     let client = reqwest::Client::new();
     let mut request = client.get(PARQUET_API_URL).query(&parsed);
@@ -60,36 +48,46 @@ async fn prepare(
         .json::<HuggingFaceParquetResponse>()
         .await
         .map_err(|error| ConversionError::Read(error.to_string()))?;
-    let parquet_files = response
-        .parquet_files
-        .into_iter()
-        .map(|file| file.url)
-        .collect::<Vec<_>>();
-    register_http_stores(context, &parquet_files)?;
-    PreparedSource::new(parquet_files)
+    prepare_http_files(response.parquet_files).await
 }
 
-fn register_http_stores(
-    context: &SessionContext,
-    parquet_files: &[String],
-) -> Result<(), ConversionError> {
-    let mut origins = HashSet::new();
+async fn prepare_http_files(
+    parquet_files: Vec<HuggingFaceParquetFile>,
+) -> Result<PreparedSource, ConversionError> {
+    let mut stores = HashMap::<String, Arc<dyn ObjectStore>>::new();
+    let mut prepared = Vec::with_capacity(parquet_files.len());
     let client_options = http_client_options()?;
-    for location in parquet_files {
-        let url = Url::parse(location)
+    for file in parquet_files {
+        let url = Url::parse(&file.url)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
         let origin = url.origin().ascii_serialization();
-        if !origins.insert(origin.clone()) {
-            continue;
-        }
-        let store = HttpBuilder::new()
-            .with_url(origin)
-            .with_client_options(client_options.clone())
-            .build()
+        let store = if let Some(store) = stores.get(&origin) {
+            Arc::clone(store)
+        } else {
+            let store: Arc<dyn ObjectStore> = Arc::new(
+                HttpBuilder::new()
+                    .with_url(&origin)
+                    .with_client_options(client_options.clone())
+                    .build()
+                    .map_err(|error| ConversionError::Read(error.to_string()))?,
+            );
+            stores.insert(origin, Arc::clone(&store));
+            store
+        };
+        let path = ObjectPath::from_url_path(url.path())
+            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
+        let metadata = store
+            .head(&path)
+            .await
             .map_err(|error| ConversionError::Read(error.to_string()))?;
-        context.register_object_store(&url, Arc::new(store));
+        prepared.push(PreparedParquetFile::object(
+            store,
+            path,
+            metadata.size,
+            file.url,
+        ));
     }
-    Ok(())
+    PreparedSource::new(prepared).await
 }
 
 fn http_client_options() -> Result<ClientOptions, ConversionError> {

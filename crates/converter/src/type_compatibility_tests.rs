@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
-use datafusion::{
-    arrow::{
-        array::{ArrayRef, RecordBatch, StringDictionaryBuilder, new_null_array},
-        datatypes::{DataType, Field, Fields, Int32Type, Schema, TimeUnit},
-    },
-    parquet::arrow::ArrowWriter,
+use arrow::{
+    array::{ArrayRef, RecordBatch, StringDictionaryBuilder, new_null_array},
+    datatypes::{DataType, Field, Fields, Int32Type, Schema, TimeUnit},
 };
 use lance::Dataset;
-use lance_conversion_core::job::{Job, JobKind, JobProgress, JobStatus};
+use lance_test_support::{running_job, write_parquet};
 use tempfile::TempDir;
 
 use crate::{ConversionProgress, Converter, ConverterConfig};
@@ -37,23 +34,18 @@ async fn convert_field(root: &std::path::Path, field: &Field) -> Result<(), Stri
     let schema = Arc::new(Schema::new(vec![field.clone()]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![get_test_array(field)])
         .map_err(|error| error.to_string())?;
-    let mut writer =
-        ArrowWriter::try_new(Vec::new(), schema, None).map_err(|error| error.to_string())?;
-    writer.write(&batch).map_err(|error| error.to_string())?;
-    tokio::fs::write(
-        source.join("data.parquet"),
-        writer.into_inner().map_err(|error| error.to_string())?,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    write_parquet(source.join("data.parquet"), &batch)
+        .await
+        .map_err(|error| error.to_string())?;
 
     Converter::new(ConverterConfig {
         target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,
         blob_inline_threshold_mib: BLOB_INLINE_THRESHOLD_MIB,
         blob_dedicated_threshold_mib: BLOB_DEDICATED_THRESHOLD_MIB,
     })
+    .map_err(|error| error.to_string())?
     .convert(
-        &get_test_job(&source, &destination),
+        &running_job(&source, &destination),
         Arc::new(ConversionProgress::default()),
     )
     .await
@@ -151,22 +143,4 @@ fn get_test_fields() -> Fields {
         ),
     ]
     .into()
-}
-
-fn get_test_job(source: &std::path::Path, destination: &std::path::Path) -> Job {
-    Job {
-        creator: "type-compatibility-test".to_owned(),
-        kind: JobKind::Copy,
-        source_uri: source.to_string_lossy().into_owned(),
-        destination_uri: destination.to_string_lossy().into_owned(),
-        blob_columns: Vec::new(),
-        indices: Vec::new(),
-        status: JobStatus::Running,
-        creation_timestamp_ms: 1,
-        update_timestamp_ms: 1,
-        attempt: 1,
-        error_reasons: Vec::new(),
-        lease_expiration_timestamp_ms: Some(i64::MAX),
-        progress: JobProgress::default(),
-    }
 }

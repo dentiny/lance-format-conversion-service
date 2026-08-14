@@ -35,11 +35,6 @@ macro_rules! string_enum {
     };
 }
 
-string_enum!(JobKind {
-    Copy => "copy",
-    Move => "move",
-});
-
 string_enum!(JobStatus {
     Queuing => "queuing",
     Running => "running",
@@ -49,23 +44,8 @@ string_enum!(JobStatus {
 
 string_enum!(IndexType {
     Scalar => "scalar",
-    BTree => "b_tree",
-    Bitmap => "bitmap",
-    LabelList => "label_list",
-    Inverted => "inverted",
-    NGram => "n_gram",
-    ZoneMap => "zone_map",
-    BloomFilter => "bloom_filter",
-    RTree => "r_tree",
-    Fm => "fm",
+    Text => "text",
     Vector => "vector",
-    IvfFlat => "ivf_flat",
-    IvfSq => "ivf_sq",
-    IvfPq => "ivf_pq",
-    IvfHnswSq => "ivf_hnsw_sq",
-    IvfHnswPq => "ivf_hnsw_pq",
-    IvfHnswFlat => "ivf_hnsw_flat",
-    IvfRq => "ivf_rq",
 });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +62,6 @@ pub struct IndexSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
     pub creator: String,
-    pub kind: JobKind,
     pub source_uri: String,
     pub destination_uri: String,
     pub blob_columns: Vec<BlobColumnSpec>,
@@ -107,7 +86,6 @@ pub struct JobError {
 pub struct NewJob {
     pub creator: String,
     pub source: DatasetLocation,
-    pub kind: JobKind,
     pub destination: DatasetLocation,
     pub blob_columns: Vec<BlobColumnSpec>,
     pub indices: Vec<IndexSpec>,
@@ -119,11 +97,6 @@ pub struct JobProgress {
     pub rows_read: u64,
     pub rows_written: u64,
     pub rows_total: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimedJob {
-    pub job: Job,
 }
 
 #[derive(Debug, Clone)]
@@ -164,23 +137,8 @@ mod tests {
     fn index_types_use_snake_case_json_names() {
         let cases = [
             (IndexType::Scalar, "scalar"),
-            (IndexType::BTree, "b_tree"),
-            (IndexType::Bitmap, "bitmap"),
-            (IndexType::LabelList, "label_list"),
-            (IndexType::Inverted, "inverted"),
-            (IndexType::NGram, "n_gram"),
-            (IndexType::ZoneMap, "zone_map"),
-            (IndexType::BloomFilter, "bloom_filter"),
-            (IndexType::RTree, "r_tree"),
-            (IndexType::Fm, "fm"),
+            (IndexType::Text, "text"),
             (IndexType::Vector, "vector"),
-            (IndexType::IvfFlat, "ivf_flat"),
-            (IndexType::IvfSq, "ivf_sq"),
-            (IndexType::IvfPq, "ivf_pq"),
-            (IndexType::IvfHnswSq, "ivf_hnsw_sq"),
-            (IndexType::IvfHnswPq, "ivf_hnsw_pq"),
-            (IndexType::IvfHnswFlat, "ivf_hnsw_flat"),
-            (IndexType::IvfRq, "ivf_rq"),
         ];
 
         for (index_type, expected) in cases {

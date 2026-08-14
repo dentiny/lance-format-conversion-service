@@ -2,24 +2,9 @@
 
 const INDEX_TYPES = [
   ["none", "None"],
-  ["scalar", "Scalar"],
-  ["b_tree", "B-tree"],
-  ["bitmap", "Bitmap"],
-  ["label_list", "Label list"],
-  ["inverted", "Inverted"],
-  ["n_gram", "N-gram"],
-  ["zone_map", "Zone map"],
-  ["bloom_filter", "Bloom filter"],
-  ["r_tree", "R-tree"],
-  ["fm", "FM"],
-  ["vector", "Vector"],
-  ["ivf_flat", "IVF Flat"],
-  ["ivf_sq", "IVF SQ"],
-  ["ivf_pq", "IVF PQ"],
-  ["ivf_hnsw_sq", "IVF HNSW SQ"],
-  ["ivf_hnsw_pq", "IVF HNSW PQ"],
-  ["ivf_hnsw_flat", "IVF HNSW Flat"],
-  ["ivf_rq", "IVF RQ"],
+  ["scalar", "Scalar — B-tree for exact and range filters"],
+  ["text", "Text — inverted index for full-text search"],
+  ["vector", "Vector — IVF-PQ for similarity search"],
 ];
 
 const state = {
@@ -39,8 +24,6 @@ function cacheElements() {
   elements.creator = document.querySelector("#creator");
   elements.source = document.querySelector("#source-uri");
   elements.destination = document.querySelector("#destination-uri");
-  elements.move = document.querySelector("#kind-move");
-  elements.moveHelp = document.querySelector("#move-help");
   elements.inspectButton = document.querySelector("#inspect-button");
   elements.submitButton = document.querySelector("#submit-button");
   elements.schemaSection = document.querySelector("#schema-section");
@@ -92,14 +75,8 @@ async function responseError(response) {
   }
 }
 
-// Updates the copy/move controls when the source URI changes.
-function updateMoveAvailability() {
-  const isHuggingFace = elements.source.value.trim().toLowerCase().startsWith("hf://");
-  elements.move.disabled = isHuggingFace;
-  elements.moveHelp.hidden = !isHuggingFace;
-  if (isHuggingFace && elements.move.checked) {
-    document.querySelector('input[name="kind"][value="copy"]').checked = true;
-  }
+// Invalidates schema-derived controls when the source URI changes.
+function updateSourceInspection() {
   if (state.inspectedSource && state.inspectedSource !== elements.source.value.trim()) {
     state.inspectedSource = "";
     state.fields = [];
@@ -109,57 +86,18 @@ function updateMoveAvailability() {
   }
 }
 
-// Converts a backend data type value into readable text.
-function formatDataType(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value === null || value === undefined) {
-    return "unknown";
-  }
-  try {
-    return JSON.stringify(value);
-  } catch (_error) {
-    return String(value);
-  }
-}
-
-// Determines whether a schema field can be ingested as a URL-backed blob.
-function isBlobEligible(field) {
-  if (typeof field.blob_eligible === "boolean") {
-    return field.blob_eligible;
-  }
-  if (typeof field.is_blob_eligible === "boolean") {
-    return field.is_blob_eligible;
-  }
-  const type = formatDataType(field.data_type ?? field.type).toLowerCase().replace(/[^a-z0-9]/g, "");
-  return type === "utf8" || type === "largeutf8" || type === "utf8view" || type === "string";
-}
-
-// Normalizes supported schema response shapes into a field array.
+// Maps the source-inspection API response into the view model.
 function normalizeFields(payload) {
-  let fields = [];
-  if (Array.isArray(payload)) {
-    fields = payload;
-  } else if (payload && Array.isArray(payload.fields)) {
-    fields = payload.fields;
-  } else if (payload && Array.isArray(payload.columns)) {
-    fields = payload.columns;
-  } else if (payload && payload.schema && Array.isArray(payload.schema.fields)) {
-    fields = payload.schema.fields;
+  if (!payload || !Array.isArray(payload.columns)) {
+    throw new Error("The source inspection response did not contain columns.");
   }
 
-  const normalized = [];
-  for (let index = 0; index < fields.length; index += 1) {
-    const field = fields[index] || {};
-    normalized.push({
-      name: field.name ?? field.column ?? `column_${index + 1}`,
-      dataType: formatDataType(field.data_type ?? field.dataType ?? field.type),
-      nullable: field.nullable ?? field.is_nullable ?? true,
-      blobEligible: isBlobEligible(field),
-    });
-  }
-  return normalized;
+  return payload.columns.map((field) => ({
+    name: field.name,
+    dataType: field.data_type,
+    nullable: field.nullable,
+    blobEligible: field.blob_eligible,
+  }));
 }
 
 // Builds an accessible index type selector for a schema field.
@@ -346,12 +284,10 @@ async function submitJob(event) {
     return;
   }
 
-  const selectedKind = document.querySelector('input[name="kind"]:checked');
   const payload = {
     creator: elements.creator.value.trim(),
     source_uri: elements.source.value.trim(),
     destination_uri: elements.destination.value.trim(),
-    kind: selectedKind.value,
     blob_columns: collectBlobColumns(),
     indices: collectIndices(),
   };
@@ -470,7 +406,7 @@ function createRouteCell(job) {
   source.title = job.source_uri || "";
   const destination = makeElement("span", "uri", job.destination_uri || "—");
   destination.title = job.destination_uri || "";
-  cell.append(source, makeElement("span", "route-arrow", `↓ ${String(job.kind || "copy").toUpperCase()}`), destination);
+  cell.append(source, makeElement("span", "route-arrow", "↓ COPY"), destination);
   return cell;
 }
 
@@ -489,7 +425,10 @@ function createErrorCell(job) {
   for (let index = errors.length - 1; index >= 0; index -= 1) {
     const error = errors[index] || {};
     const reason = error.reason || error.error || String(error);
-    details.append(makeElement("p", "", `Attempt ${error.attempt ?? "—"} · ${reason}`));
+    const occurredAt = formatTimestamp(error.error_timestamp_ms);
+    details.append(
+      makeElement("p", "", `Attempt ${error.attempt ?? "—"} · ${occurredAt} · ${reason}`),
+    );
   }
   cell.append(details);
   return cell;
@@ -790,10 +729,10 @@ function clearJobFilters() {
 function initialize() {
   cacheElements();
   if (elements.form) {
-    elements.source.addEventListener("input", updateMoveAvailability);
+    elements.source.addEventListener("input", updateSourceInspection);
     elements.inspectButton.addEventListener("click", inspectSchema);
     elements.form.addEventListener("submit", submitJob);
-    updateMoveAvailability();
+    updateSourceInspection();
   }
   if (elements.jobsBody) {
     restoreJobFilters();

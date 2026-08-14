@@ -3,14 +3,12 @@ use std::sync::{
     atomic::{AtomicI64, Ordering},
 };
 
-use lance_conversion_core::{
-    job::{
-        BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobKind,
-        JobProgress, JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
-    },
-    location::DatasetLocation,
+use lance_conversion_core::job::{
+    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobProgress, JobStatus,
+    LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_test_support::new_job;
 
 use super::store::{Clock, SqliteJobStore};
 
@@ -32,24 +30,12 @@ impl Clock for TestClock {
     }
 }
 
-fn source(source_uri: &str) -> DatasetLocation {
-    DatasetLocation::parse_location(source_uri).unwrap()
-}
-
 #[tokio::test]
 async fn created_job_can_be_listed() {
     let store = SqliteJobStore::open(":memory:").await.unwrap();
     let destination_uri = "s3://destination-bucket/data.lance";
     store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location(destination_uri).unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
+        .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
         .await
         .unwrap();
 
@@ -82,15 +68,7 @@ async fn jobs_can_be_filtered_by_creator_and_creation_timestamp() {
         ("alice", 30, "/destinations/alice-new.lance"),
     ] {
         store
-            .create_job(NewJob {
-                creator: creator.to_owned(),
-                source: source("/datasets/source"),
-                kind: JobKind::Copy,
-                destination: source(destination),
-                blob_columns: Vec::new(),
-                indices: Vec::new(),
-                creation_timestamp_ms: timestamp,
-            })
+            .create_job(new_job(creator, "/datasets/source", destination, timestamp).unwrap())
             .await
             .unwrap();
     }
@@ -164,26 +142,18 @@ async fn blob_and_index_specs_round_trip_through_store() {
     let indices = vec![
         IndexSpec {
             columns: vec!["category".to_owned()],
-            index_type: IndexType::Bitmap,
+            index_type: IndexType::Scalar,
         },
         IndexSpec {
-            columns: vec!["location".to_owned()],
-            index_type: IndexType::RTree,
+            columns: vec!["description".to_owned()],
+            index_type: IndexType::Text,
         },
     ];
+    let mut job = new_job("test-user", "/datasets/source", destination_uri, 3).unwrap();
+    job.blob_columns.clone_from(&blob_columns);
+    job.indices.clone_from(&indices);
 
-    store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location(destination_uri).unwrap(),
-            blob_columns: blob_columns.clone(),
-            indices: indices.clone(),
-            creation_timestamp_ms: 3,
-        })
-        .await
-        .unwrap();
+    store.create_job(job).await.unwrap();
 
     let job = store.get_job(destination_uri).await.unwrap();
     assert_eq!(job.blob_columns, blob_columns);
@@ -197,23 +167,22 @@ async fn claiming_a_job_sets_its_status_to_running() {
         .await
         .unwrap();
     store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("s3://source-bucket/data"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
-                .unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
+        .create_job(
+            new_job(
+                "test-user",
+                "s3://source-bucket/data",
+                "s3://destination-bucket/data.lance",
+                3,
+            )
+            .unwrap(),
+        )
         .await
         .unwrap();
 
     let first_claim = store.claim_jobs(1, 100).await.unwrap();
     assert_eq!(first_claim.len(), 1);
-    let destination_uri = first_claim[0].job.destination_uri.clone();
-    assert_eq!(first_claim[0].job.attempt, 1);
+    let destination_uri = first_claim[0].destination_uri.clone();
+    assert_eq!(first_claim[0].attempt, 1);
     assert_eq!(
         store.get_job(&destination_uri).await.unwrap().status,
         JobStatus::Running
@@ -226,21 +195,16 @@ async fn updating_progress_keeps_job_running() {
     let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
         .await
         .unwrap();
-    store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Move,
-            destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
-                .unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
-        .await
-        .unwrap();
+    let job = new_job(
+        "test-user",
+        "/datasets/source",
+        "s3://destination-bucket/data.lance",
+        3,
+    )
+    .unwrap();
+    store.create_job(job).await.unwrap();
     let claim = store.claim_jobs(1, 1_000).await.unwrap().remove(0);
-    let destination_uri = claim.job.destination_uri.clone();
+    let destination_uri = claim.destination_uri.clone();
 
     let progress = JobProgress {
         rows_read: 10,
@@ -251,7 +215,7 @@ async fn updating_progress_keeps_job_running() {
     store
         .checkpoint_progress(ProgressUpdate {
             destination_uri: destination_uri.clone(),
-            attempt: claim.job.attempt,
+            attempt: claim.attempt,
             progress,
         })
         .await
@@ -269,26 +233,25 @@ async fn updating_lease_keeps_job_running() {
         .await
         .unwrap();
     store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location("s3://destination-bucket/data.lance")
-                .unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
+        .create_job(
+            new_job(
+                "test-user",
+                "/datasets/source",
+                "s3://destination-bucket/data.lance",
+                3,
+            )
+            .unwrap(),
+        )
         .await
         .unwrap();
     let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
-    let destination_uri = claim.job.destination_uri.clone();
+    let destination_uri = claim.destination_uri.clone();
 
     clock.set(20);
     store
         .renew_lease(LeaseUpdate {
             destination_uri: destination_uri.clone(),
-            attempt: claim.job.attempt,
+            attempt: claim.attempt,
             convert_lease_duration_ms: 200,
             progress: JobProgress::default(),
         })
@@ -308,15 +271,7 @@ async fn completing_a_job_clears_its_lease() {
         .unwrap();
     let destination_uri = "s3://destination-bucket/completed.lance";
     store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location(destination_uri).unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
+        .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
         .await
         .unwrap();
     let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
@@ -329,7 +284,7 @@ async fn completing_a_job_clears_its_lease() {
     store
         .complete_job(CompletionUpdate {
             destination_uri: destination_uri.to_owned(),
-            attempt: claim.job.attempt,
+            attempt: claim.attempt,
             progress,
         })
         .await
@@ -363,21 +318,13 @@ async fn failures_retry_until_attempt_cap() {
         .unwrap();
     let destination_uri = "s3://destination-bucket/failed.lance";
     store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location(destination_uri).unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
+        .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
         .await
         .unwrap();
 
     for attempt in 1..=MAX_JOB_ATTEMPTS {
         let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
-        assert_eq!(claim.job.attempt, attempt);
+        assert_eq!(claim.attempt, attempt);
         store
             .fail_job(FailureUpdate {
                 destination_uri: destination_uri.to_owned(),
@@ -418,15 +365,7 @@ async fn final_expired_attempt_becomes_failed() {
         .unwrap();
     let destination_uri = "s3://destination-bucket/expired.lance";
     store
-        .create_job(NewJob {
-            creator: "test-user".to_owned(),
-            source: source("/datasets/source"),
-            kind: JobKind::Copy,
-            destination: DatasetLocation::parse_location(destination_uri).unwrap(),
-            blob_columns: Vec::new(),
-            indices: Vec::new(),
-            creation_timestamp_ms: 3,
-        })
+        .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
         .await
         .unwrap();
 
@@ -435,7 +374,7 @@ async fn final_expired_attempt_becomes_failed() {
         store
             .fail_job(FailureUpdate {
                 destination_uri: destination_uri.to_owned(),
-                attempt: claim.job.attempt,
+                attempt: claim.attempt,
                 progress: JobProgress::default(),
                 reason: format!("failure {attempt}"),
             })
@@ -443,7 +382,7 @@ async fn final_expired_attempt_becomes_failed() {
             .unwrap();
     }
     let final_claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
-    assert_eq!(final_claim.job.attempt, MAX_JOB_ATTEMPTS);
+    assert_eq!(final_claim.attempt, MAX_JOB_ATTEMPTS);
     clock.set(110);
 
     assert!(store.claim_jobs(1, 100).await.unwrap().is_empty());
