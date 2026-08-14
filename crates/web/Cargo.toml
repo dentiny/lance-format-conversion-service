@@ -17,10 +17,12 @@ sqlite = ["lance-job-store-factory/sqlite"]
 
 [dependencies]
 axum.workspace = true
+clap.workspace = true
 lance-conversion-core.workspace = true
 lance-converter.workspace = true
 lance-job-store.workspace = true
 lance-job-store-factory.workspace = true
+percent-encoding.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

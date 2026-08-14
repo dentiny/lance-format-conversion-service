@@ -3943,6 +3943,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lance-convert"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lance-conversion-core",
+ "percent-encoding",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "lance-converter"
 version = "0.1.0"
 dependencies = [
@@ -4344,6 +4358,7 @@ name = "lance-reconciler"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "clap",
  "futures",
  "lance",
  "lance-conversion-core",
@@ -4440,12 +4455,14 @@ name = "lance-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clap",
  "lance-conversion-core",
  "lance-converter",
  "lance-job-store",
  "lance-job-store-factory",
  "lance-job-store-postgres",
  "lance-job-store-sqlite",
+ "percent-encoding",
  "serde",
  "serde_json",
  "serial_test",

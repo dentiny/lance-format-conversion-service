@@ -13,7 +13,6 @@ use lance_job_store_sqlite::SqliteJobStore;
 use lance_test_support::new_job;
 use serial_test::serial;
 
-const JOB_LOOKUP_LIMIT: usize = 100;
 const BACKENDS: [&str; 2] = ["sqlite", "postgres"];
 
 struct TestClock(AtomicI64);
@@ -58,12 +57,9 @@ async fn store_with_clock(backend: &str, clock: Arc<dyn Clock>) -> Arc<dyn JobSt
 
 async fn job(store: &dyn JobStore, destination_uri: &str) -> Job {
     store
-        .list_jobs(JOB_LOOKUP_LIMIT)
+        .get_job(destination_uri)
         .await
-        .unwrap()
-        .into_iter()
-        .find(|job| job.destination_uri == destination_uri)
-        .unwrap_or_else(|| panic!("missing job {destination_uri}"))
+        .unwrap_or_else(|error| panic!("missing job {destination_uri}: {error}"))
 }
 
 #[tokio::test]
@@ -89,6 +85,25 @@ async fn created_job_can_be_listed_impl(backend: &str, store: Arc<dyn JobStore>)
         job(store.as_ref(), destination_uri).await.destination_uri,
         destination_uri,
         "{backend}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn missing_job_returns_not_found() {
+    for (backend, store) in test_stores().await {
+        missing_job_returns_not_found_impl(backend, store).await;
+    }
+}
+
+async fn missing_job_returns_not_found_impl(backend: &str, store: Arc<dyn JobStore>) {
+    let error = store
+        .get_job("s3://destination-bucket/missing.lance")
+        .await
+        .expect_err("missing job should not be found");
+    assert!(
+        matches!(error, StoreError::NotFound),
+        "{backend}: {error:?}"
     );
 }
 
