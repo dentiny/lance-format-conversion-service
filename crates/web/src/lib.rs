@@ -4,12 +4,13 @@ pub mod config;
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::{StatusCode, header},
+    extract::{Path, Query, State},
+    http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use lance_converter::{SourceSchemaInspection, inspect_source_schema};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -20,6 +21,11 @@ use lance_conversion_core::{
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError, now_ms};
 
 const DEFAULT_JOB_LIST_LIMIT: usize = 100;
+const JOB_PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const JOBS_HTML: &str = include_str!("../static/jobs.html");
 const APP_CSS: &str = include_str!("../static/app.css");
@@ -38,6 +44,7 @@ pub fn router(store: Arc<dyn JobStore>) -> Router {
         .route("/app.js", get(javascript))
         .route("/healthz", get(health))
         .route("/v1/jobs", post(create_job).get(list_jobs))
+        .route("/v1/jobs/{destination_uri}", get(get_job))
         .route("/v1/sources/inspect", post(inspect_source))
         .with_state(AppState { store })
 }
@@ -103,15 +110,20 @@ struct CreateJobRequest {
 async fn create_job(
     State(state): State<AppState>,
     Json(request): Json<CreateJobRequest>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
+    let creator = request.creator.trim();
+    if creator.is_empty() {
+        return Err(ApiError::BadRequest("creator must not be empty".to_owned()));
+    }
     let source = DatasetLocation::parse_location(request.source_uri)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let destination = DatasetLocation::parse_location(request.destination_uri)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    let destination_uri = destination.uri().to_owned();
     state
         .store
         .create_job(NewJob {
-            creator: request.creator,
+            creator: creator.to_owned(),
             source,
             destination,
             blob_columns: request.blob_columns,
@@ -119,7 +131,30 @@ async fn create_job(
             creation_timestamp_ms: now_ms()?,
         })
         .await?;
-    Ok(StatusCode::ACCEPTED)
+    let job = state.store.get_job(&destination_uri).await?;
+    let location = job_location(&job.destination_uri)?;
+    Ok((
+        StatusCode::CREATED,
+        [(header::LOCATION, location)],
+        Json(job),
+    ))
+}
+
+/// Returns the job identified by its destination URI.
+async fn get_job(
+    State(state): State<AppState>,
+    Path(destination_uri): Path<String>,
+) -> Result<Json<Job>, ApiError> {
+    Ok(Json(state.store.get_job(&destination_uri).await?))
+}
+
+fn job_location(destination_uri: &str) -> Result<HeaderValue, ApiError> {
+    let location = format!(
+        "/v1/jobs/{}",
+        utf8_percent_encode(destination_uri, JOB_PATH_SEGMENT)
+    );
+    HeaderValue::from_str(&location)
+        .map_err(|error| ApiError::BadRequest(format!("invalid job location: {error}")))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -202,11 +237,9 @@ impl IntoResponse for ApiError {
                 StatusCode::BAD_REQUEST
             }
             Self::Store(StoreError::NotFound) => StatusCode::NOT_FOUND,
+            Self::Store(StoreError::Conflict(_)) => StatusCode::CONFLICT,
             Self::Store(
-                StoreError::LeaseLost
-                | StoreError::Conflict(_)
-                | StoreError::Database(_)
-                | StoreError::Worker(_),
+                StoreError::LeaseLost | StoreError::Database(_) | StoreError::Worker(_),
             ) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
@@ -224,20 +257,28 @@ mod tests {
 
     use axum::{
         body::{Body, to_bytes},
-        http::{Request, StatusCode},
+        http::{Request, StatusCode, header},
         response::IntoResponse,
     };
     use serial_test::serial;
     use tower::ServiceExt;
 
-    use lance_conversion_core::job::IndexType;
+    use lance_conversion_core::job::{IndexType, JobStatus};
     use lance_job_store::{JobStore, StoreError};
     use lance_job_store_postgres::test_utils::open_isolated;
     use lance_job_store_sqlite::SqliteJobStore;
 
-    use crate::{ApiError, ErrorBody, router};
+    use crate::{ApiError, ErrorBody, job_location, router};
 
     const TEST_RESPONSE_BODY_LIMIT: usize = 64 * 1024;
+
+    fn job_uri(destination_uri: &str) -> String {
+        job_location(destination_uri)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
 
     async fn test_stores() -> [(&'static str, Arc<dyn JobStore>); 2] {
         [
@@ -325,21 +366,56 @@ mod tests {
     }
 
     async fn job_submission_accepts_source_uri_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let destination_uri = "s3://destination-bucket/data.lance";
         let app = router(store);
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/v1/jobs")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"creator":"test-user","source_uri":"s3://source-bucket/data","destination_uri":"s3://destination-bucket/data.lance"}"#,
-                    ))
+                    .body(Body::from(format!(
+                        r#"{{"creator":"test-user","source_uri":"s3://source-bucket/data","destination_uri":"{destination_uri}"}}"#
+                    )))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED, "{backend}");
+        assert_eq!(response.status(), StatusCode::CREATED, "{backend}");
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            &job_uri(destination_uri),
+            "{backend}"
+        );
+        let job: lance_conversion_core::job::Job = serde_json::from_slice(
+            &to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(job.destination_uri, destination_uri, "{backend}");
+        assert_eq!(job.status, JobStatus::Queuing, "{backend}");
+        assert_eq!(job.attempt, 0, "{backend}");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(job_uri(destination_uri))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{backend}");
+        let fetched: lance_conversion_core::job::Job = serde_json::from_slice(
+            &to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fetched.destination_uri, destination_uri, "{backend}");
+        assert_eq!(fetched.creator, "test-user", "{backend}");
     }
 
     #[tokio::test]
@@ -370,7 +446,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::ACCEPTED, "{backend}");
+            assert_eq!(response.status(), StatusCode::CREATED, "{backend}");
         }
 
         let response = app
@@ -429,7 +505,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED, "{backend}");
+        assert_eq!(response.status(), StatusCode::CREATED, "{backend}");
 
         let response = app
             .oneshot(
@@ -453,6 +529,55 @@ mod tests {
             IndexType::Vector,
             "{backend}"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn duplicate_destination_conflicts() {
+        for (backend, store) in test_stores().await {
+            duplicate_destination_conflicts_impl(backend, store).await;
+        }
+    }
+
+    async fn duplicate_destination_conflicts_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let app = router(store);
+        let body = r#"{"creator":"test-user","source_uri":"s3://source-bucket/data","destination_uri":"s3://destination-bucket/dup.lance"}"#;
+        for expected in [StatusCode::CREATED, StatusCode::CONFLICT] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/jobs")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{backend}");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_job_is_not_found() {
+        for (backend, store) in test_stores().await {
+            missing_job_is_not_found_impl(backend, store).await;
+        }
+    }
+
+    async fn missing_job_is_not_found_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let response = router(store)
+            .oneshot(
+                Request::builder()
+                    .uri(job_uri("s3://destination-bucket/missing.lance"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{backend}");
     }
 
     #[tokio::test]

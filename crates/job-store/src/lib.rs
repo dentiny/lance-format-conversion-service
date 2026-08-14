@@ -36,6 +36,11 @@ pub trait JobStore: Send + Sync {
     /// empty error history, and zero progress.
     async fn create_job(&self, job: NewJob) -> Result<(), StoreError>;
 
+    /// Returns the job identified by destination URI.
+    ///
+    /// Missing jobs return [`StoreError::NotFound`].
+    async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError>;
+
     /// Returns jobs matching all supplied filters, ordered by creation time
     /// from newest to oldest, with destination URI as the tie-breaker.
     ///

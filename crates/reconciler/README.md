@@ -84,7 +84,7 @@ competing timer or completed conversion cannot cancel a write midway.
 Each polling cycle:
 
 1. Collects completed worker tasks.
-2. Computes capacity from `WORKER_COUNT`.
+2. Computes capacity from `--worker-count`.
 3. Atomically claims up to the available capacity.
 4. Starts one task per claimed job.
 
@@ -94,23 +94,24 @@ the process supervisor can restart it.
 
 ## Configuration
 
-Configuration is read only from environment variables:
+Configuration is set with CLI flags. Unset flags use the defaults below.
+Run `lance-reconciler --help` for the full list.
 
-- `DATABASE_URL` — default `postgres://127.0.0.1:5432/lance_jobs`. SQLite URLs
+- `--database-url` — default `postgres://127.0.0.1:5432/lance_jobs`. SQLite URLs
   require building with `--features sqlite`
-- `DATABASE_MAX_CONNECTIONS` — PostgreSQL pool size, default `8`. Ignored for
+- `--database-max-connections` — PostgreSQL pool size, default `8`. Ignored for
   SQLite
-- `WORKER_COUNT` — default `256`
-- `POLL_INTERVAL_MS` — default `1000`
-- `LEASE_DURATION_SECS` — default `900`
-- `LEASE_RENEW_INTERVAL_SECS` — default `180`
-- `PROGRESS_INTERVAL_SECS` — default `30`
-- `TARGET_LANCE_FILE_SIZE_MIB` — default `512`
-- `BLOB_INLINE_THRESHOLD_MIB` — default `2`
-- `BLOB_DEDICATED_THRESHOLD_MIB` — default `32`
+- `--worker-count` — default `256`
+- `--poll-interval-ms` — default `1000`
+- `--lease-duration-secs` — default `900`
+- `--lease-renew-interval-secs` — default `180`
+- `--progress-interval-secs` — default `30`
+- `--target-lance-file-size-mib` — default `512`
+- `--blob-inline-threshold-mib` — default `2`
+- `--blob-dedicated-threshold-mib` — default `32`
 
 Run it from the workspace root:
 
 ```shell
-DATABASE_URL=postgres://127.0.0.1:5432/lance_jobs cargo run -p lance-reconciler
+cargo run -p lance-reconciler -- --database-url postgres://127.0.0.1:5432/lance_jobs
 ```

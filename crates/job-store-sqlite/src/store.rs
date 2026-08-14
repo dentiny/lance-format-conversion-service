@@ -120,6 +120,11 @@ impl JobStore for SqliteJobStore {
         transaction.commit().await.map_err(database_error)
     }
 
+    async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
+        let mut connection = self.pool.acquire().await.map_err(database_error)?;
+        load_job(&mut connection, destination_uri).await
+    }
+
     async fn query_jobs(&self, query: JobQuery) -> Result<Vec<Job>, StoreError> {
         if query.limit == 0 {
             return Ok(Vec::new());

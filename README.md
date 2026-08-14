@@ -75,7 +75,8 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - Configure blob columns and indexes from the inspected schema.
 - Monitor queued, running, successful, and failed jobs on a dedicated page.
 - View rows read, rows written, total rows, attempts, timestamps, and errors.
-- Use the same functionality through the Axum JSON API.
+- Use the same functionality through the Axum JSON API or the `lance-convert`
+  CLI.
 
 ## Workspace architecture
 
@@ -90,12 +91,15 @@ files into a versioned dataset designed for multimodal and AI workloads:
   Schema SQL is
   [Terraform-managed](crates/job-store-postgres/migrations/README.md)
 - `crates/web`: `lance-web`, the HTTP job control plane and embedded UI
+- `crates/cli`: `lance-convert`, a CLI that submits and inspects jobs through
+  the web API
 - [`crates/reconciler`](crates/reconciler/README.md): bounded polling, lease
   maintenance, progress checkpointing, and conversion execution
 
-There are exactly two deployables: `lance-web` and `lance-reconciler`. There is
+There are two server deployables: `lance-web` and `lance-reconciler`. There is
 no separate worker or maintenance process. The reconciler claims jobs and runs
-its conversion workers in one process.
+its conversion workers in one process. `lance-convert` is a client; it talks to
+`lance-web` over HTTP and does not open the job database.
 
 ## TODO
 
@@ -134,39 +138,40 @@ reconciler processes against one PostgreSQL database.
 Start the web control plane in the first terminal:
 
 ```shell
-LISTEN_ADDRESS=127.0.0.1:8080 \
-DATABASE_URL=postgres://user:pass@127.0.0.1:5432/lance_jobs \
-DATABASE_MAX_CONNECTIONS=8 \
-cargo run -p lance-web
+cargo run -p lance-web -- \
+  --listen-address 127.0.0.1:8080 \
+  --database-url postgres://user:pass@127.0.0.1:5432/lance_jobs \
+  --database-max-connections 8
 ```
 
 Start the reconciler against the same database in a second terminal:
 
 ```shell
-DATABASE_URL=postgres://user:pass@127.0.0.1:5432/lance_jobs \
-DATABASE_MAX_CONNECTIONS=8 \
-WORKER_COUNT=4 \
-POLL_INTERVAL_MS=1000 \
-LEASE_DURATION_SECS=900 \
-LEASE_RENEW_INTERVAL_SECS=180 \
-PROGRESS_INTERVAL_SECS=30 \
-TARGET_LANCE_FILE_SIZE_MIB=512 \
-BLOB_INLINE_THRESHOLD_MIB=2 \
-BLOB_DEDICATED_THRESHOLD_MIB=32 \
-cargo run -p lance-reconciler
+cargo run -p lance-reconciler -- \
+  --database-url postgres://user:pass@127.0.0.1:5432/lance_jobs \
+  --database-max-connections 8 \
+  --worker-count 4 \
+  --poll-interval-ms 1000 \
+  --lease-duration-secs 900 \
+  --lease-renew-interval-secs 180 \
+  --progress-interval-secs 30 \
+  --target-lance-file-size-mib 512 \
+  --blob-inline-threshold-mib 2 \
+  --blob-dedicated-threshold-mib 32
 ```
 
 Both processes are required: `lance-web` accepts and displays jobs, while
-`lance-reconciler` claims and executes them. Omit `DATABASE_URL` to use
-`postgres://127.0.0.1:5432/lance_jobs`. Omit `DATABASE_MAX_CONNECTIONS` to use
-a PostgreSQL pool of 8 connections.
+`lance-reconciler` claims and executes them. Omit `--database-url` to use
+`postgres://127.0.0.1:5432/lance_jobs`. Omit `--database-max-connections` to
+use a PostgreSQL pool of 8 connections. Run `lance-web --help` or
+`lance-reconciler --help` for the full flag list.
 
 For same-host SQLite development, enable the `sqlite` feature:
 
 ```shell
 mkdir -p data
-DATABASE_URL=sqlite://./data/service.db cargo run -p lance-web --features sqlite
-DATABASE_URL=sqlite://./data/service.db cargo run -p lance-reconciler --features sqlite
+cargo run -p lance-web --features sqlite -- --database-url sqlite://./data/service.db
+cargo run -p lance-reconciler --features sqlite -- --database-url sqlite://./data/service.db
 ```
 
 Open these pages:
@@ -203,6 +208,7 @@ expansion. Use an absolute path instead.
 - `POST /v1/sources/inspect`
 - `POST /v1/jobs`
 - `GET /v1/jobs`
+- `GET /v1/jobs/{destination_uri}`
 
 Inspect a source before enqueueing:
 
@@ -226,8 +232,17 @@ curl -X POST http://127.0.0.1:8080/v1/jobs \
   }'
 ```
 
-`POST /v1/jobs` returns `202 Accepted`. Poll `GET /v1/jobs` for status and
-progress. Job statuses are `queuing`, `running`, `succeeded`, and `failed`.
+`POST /v1/jobs` returns `201 Created` with the job JSON body and a `Location`
+header pointing at `GET /v1/jobs/{destination_uri}`. Percent-encode the
+destination URI in that path, because it is the job key and may contain `://`
+and `/`. A second job for the same destination returns `409 Conflict`. Job
+statuses are `queuing`, `running`, `succeeded`, and `failed`.
+
+Read one job:
+
+```shell
+curl http://127.0.0.1:8080/v1/jobs/s3%3A%2F%2Fdestination-bucket%2Fdatasets%2Fimages.lance
+```
 
 Filter the newest jobs by exact creator, inclusive creation-time bounds, and
 ongoing status:
@@ -246,3 +261,24 @@ terminal failures; `failed_only` and `ongoing_only` are mutually exclusive.
 Use `order_by=creation|update` and `order=asc|desc` to sort results. The default
 is creation timestamp from newest to oldest. The service returns at most 100
 jobs.
+
+## CLI
+
+`lance-convert` calls the same HTTP API. Point it at the web control plane with
+`--url` or `LANCE_API_URL` (default `http://127.0.0.1:8080`).
+
+```shell
+cargo run -p lance-convert -- submit \
+  --creator test-user \
+  --source testdata/sample.parquet \
+  --destination /tmp/sample.lance \
+  --blob-column asset_url \
+  --index label:scalar
+
+cargo run -p lance-convert -- status --destination /tmp/sample.lance
+cargo run -p lance-convert -- list --creator test-user --ongoing
+```
+
+Commands print pretty JSON. Submit a job, then poll `status` or `list` until
+the job is `succeeded` or `failed`. Both `lance-web` and `lance-reconciler`
+must be running for a submitted job to execute.
