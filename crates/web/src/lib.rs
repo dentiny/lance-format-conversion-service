@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 pub mod config;
 
@@ -20,7 +17,7 @@ use lance_conversion_core::{
     job::{BlobColumnSpec, IndexSpec, Job, NewJob},
     location::DatasetLocation,
 };
-use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError, now_ms};
 
 const DEFAULT_JOB_LIST_LIMIT: usize = 100;
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -185,22 +182,12 @@ async fn list_jobs(
     ))
 }
 
-fn now_ms() -> Result<i64, ApiError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-        .as_millis();
-    i64::try_from(millis).map_err(|error| ApiError::Internal(error.to_string()))
-}
-
 #[derive(Debug, Error)]
 enum ApiError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
     Store(#[from] StoreError),
-    #[error("{0}")]
-    Internal(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -220,8 +207,7 @@ impl IntoResponse for ApiError {
                 | StoreError::Conflict(_)
                 | StoreError::Database(_)
                 | StoreError::Worker(_),
-            )
-            | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
             "internal server error".to_owned()
@@ -241,48 +227,84 @@ mod tests {
         http::{Request, StatusCode},
         response::IntoResponse,
     };
+    use serial_test::serial;
     use tower::ServiceExt;
 
     use lance_conversion_core::job::IndexType;
-    use lance_job_store::StoreError;
+    use lance_job_store::{JobStore, StoreError};
+    use lance_job_store_postgres::test_utils::open_isolated;
     use lance_job_store_sqlite::SqliteJobStore;
 
     use crate::{ApiError, ErrorBody, router};
 
     const TEST_RESPONSE_BODY_LIMIT: usize = 64 * 1024;
 
+    async fn test_stores() -> [(&'static str, Arc<dyn JobStore>); 2] {
+        [
+            (
+                "sqlite",
+                Arc::new(SqliteJobStore::open(":memory:").await.unwrap()),
+            ),
+            ("postgres", Arc::new(open_isolated().await)),
+        ]
+    }
+
     #[tokio::test]
+    #[serial]
     async fn root_serves_the_mvp_ui() {
-        let store = SqliteJobStore::open(":memory:").await.unwrap();
-        let response = router(Arc::new(store))
+        for (backend, store) in test_stores().await {
+            root_serves_the_mvp_ui_impl(backend, store).await;
+        }
+    }
+
+    async fn root_serves_the_mvp_ui_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let response = router(store)
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK, "{backend}");
         let body = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
             .await
             .unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("Lance Format Conversion"));
+        assert!(
+            String::from_utf8_lossy(&body).contains("Lance Format Conversion"),
+            "{backend}"
+        );
     }
 
     #[tokio::test]
+    #[serial]
     async fn jobs_page_is_served_separately() {
-        let store = SqliteJobStore::open(":memory:").await.unwrap();
-        let response = router(Arc::new(store))
+        for (backend, store) in test_stores().await {
+            jobs_page_is_served_separately_impl(backend, store).await;
+        }
+    }
+
+    async fn jobs_page_is_served_separately_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let response = router(store)
             .oneshot(Request::builder().uri("/jobs").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK, "{backend}");
         let body = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
             .await
             .unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("Conversion jobs"));
+        assert!(
+            String::from_utf8_lossy(&body).contains("Conversion jobs"),
+            "{backend}"
+        );
     }
 
     #[tokio::test]
+    #[serial]
     async fn health_endpoint_is_available() {
-        let store = SqliteJobStore::open(":memory:").await.unwrap();
-        let response = router(Arc::new(store))
+        for (backend, store) in test_stores().await {
+            health_endpoint_is_available_impl(backend, store).await;
+        }
+    }
+
+    async fn health_endpoint_is_available_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let response = router(store)
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
@@ -291,13 +313,19 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK, "{backend}");
     }
 
     #[tokio::test]
+    #[serial]
     async fn job_submission_accepts_source_uri() {
-        let store = SqliteJobStore::open(":memory:").await.unwrap();
-        let app = router(Arc::new(store));
+        for (backend, store) in test_stores().await {
+            job_submission_accepts_source_uri_impl(backend, store).await;
+        }
+    }
+
+    async fn job_submission_accepts_source_uri_impl(backend: &str, store: Arc<dyn JobStore>) {
+        let app = router(store);
         let response = app
             .oneshot(
                 Request::builder()
@@ -311,12 +339,18 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{backend}");
     }
 
     #[tokio::test]
+    #[serial]
     async fn job_query_filters_by_creator() {
-        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        for (backend, store) in test_stores().await {
+            job_query_filters_by_creator_impl(backend, store).await;
+        }
+    }
+
+    async fn job_query_filters_by_creator_impl(backend: &str, store: Arc<dyn JobStore>) {
         let app = router(store);
         for (creator, destination) in [
             ("alice", "s3://destination-bucket/alice.lance"),
@@ -336,7 +370,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(response.status(), StatusCode::ACCEPTED, "{backend}");
         }
 
         let response = app
@@ -348,21 +382,30 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::OK, "{backend}");
         let jobs: Vec<lance_conversion_core::job::Job> = serde_json::from_slice(
             &to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
                 .await
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].creator, "alice");
+        assert_eq!(jobs.len(), 1, "{backend}");
+        assert_eq!(jobs[0].creator, "alice", "{backend}");
     }
 
     #[tokio::test]
+    #[serial]
     async fn job_submission_maps_blob_and_index_specs() {
-        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
-        let app = router(store.clone());
+        for (backend, store) in test_stores().await {
+            job_submission_maps_blob_and_index_specs_impl(backend, store).await;
+        }
+    }
+
+    async fn job_submission_maps_blob_and_index_specs_impl(
+        backend: &str,
+        store: Arc<dyn JobStore>,
+    ) {
+        let app = router(store);
         let response = app
             .clone()
             .oneshot(
@@ -377,7 +420,7 @@ mod tests {
                             "destination_uri":"s3://destination-bucket/specs.lance",
                             "blob_columns":[{"column":"image"}],
                             "indices":[{
-                                "columns":["embedding"],
+                                "column":"embedding",
                                 "index_type":"vector"
                             }]
                         }"#,
@@ -386,7 +429,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{backend}");
 
         let response = app
             .oneshot(
@@ -403,9 +446,13 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(jobs[0].blob_columns[0].column, "image");
-        assert_eq!(jobs[0].indices[0].columns, ["embedding"]);
-        assert_eq!(jobs[0].indices[0].index_type, IndexType::Vector);
+        assert_eq!(jobs[0].blob_columns[0].column, "image", "{backend}");
+        assert_eq!(jobs[0].indices[0].column, "embedding", "{backend}");
+        assert_eq!(
+            jobs[0].indices[0].index_type,
+            IndexType::Vector,
+            "{backend}"
+        );
     }
 
     #[tokio::test]

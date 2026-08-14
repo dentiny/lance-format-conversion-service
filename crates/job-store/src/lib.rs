@@ -5,6 +5,10 @@ use lance_conversion_core::job::{
     CompletionUpdate, FailureUpdate, Job, LeaseUpdate, NewJob, ProgressUpdate,
 };
 
+mod clock;
+
+pub use clock::{Clock, SystemClock, now_ms};
+
 /// Filters, orders, and bounds a job query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobQuery {
@@ -58,8 +62,9 @@ pub trait JobStore: Send + Sync {
     /// Jobs are claimed from oldest to newest, with destination URI as the
     /// deterministic tie-breaker. Claiming sets the status to running,
     /// increments the attempt, and sets the lease expiration relative to the
-    /// store's current time. A zero limit or non-positive lease duration
-    /// returns an empty list.
+    /// store's current time. A selected running job whose lease expired on the
+    /// final attempt is marked failed by destination URI and is not returned.
+    /// A zero limit or non-positive lease duration returns an empty list.
     async fn claim_jobs(
         &self,
         limit: usize,

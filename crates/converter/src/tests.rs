@@ -321,11 +321,11 @@ async fn creates_requested_scalar_and_text_indexes() {
     let mut job = running_job(&source, &destination);
     job.indices = vec![
         IndexSpec {
-            columns: vec!["id".to_owned()],
+            column: "id".to_owned(),
             index_type: IndexType::Scalar,
         },
         IndexSpec {
-            columns: vec!["text".to_owned()],
+            column: "text".to_owned(),
             index_type: IndexType::Text,
         },
     ];

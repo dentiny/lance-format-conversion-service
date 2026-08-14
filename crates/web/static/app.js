@@ -252,7 +252,7 @@ function collectIndices() {
   for (let index = 0; index < selects.length; index += 1) {
     if (selects[index].value !== "none") {
       indices.push({
-        columns: [selects[index].dataset.column],
+        column: selects[index].dataset.column,
         index_type: selects[index].value,
       });
     }
@@ -462,7 +462,7 @@ function createJobDetailsRow(job, rowId) {
     ? job.blob_columns.map((spec) => spec.column)
     : [];
   const indices = Array.isArray(job.indices)
-    ? job.indices.map((spec) => `${spec.index_type} · ${(spec.columns || []).join(", ")}`)
+    ? job.indices.map((spec) => `${spec.index_type} · ${spec.column}`)
     : [];
   content.append(
     createSpecGroup("Blob columns", blobs),

@@ -10,6 +10,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["postgres"]
+postgres = ["lance-job-store-factory/postgres"]
+sqlite = ["lance-job-store-factory/sqlite"]
+
 [dependencies]
 lance-conversion-core.workspace = true
 lance-converter.workspace = true
@@ -22,6 +27,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 arrow.workspace = true
 futures.workspace = true
 lance.workspace = true
+lance-job-store-postgres = { workspace = true, features = ["test-utils"] }
 lance-job-store-sqlite.workspace = true
 lance-test-support.workspace = true
+serial_test = "3"
 tempfile.workspace = true

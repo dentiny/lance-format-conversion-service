@@ -1,9 +1,4 @@
-use std::{
-    path::Path,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use sqlx::{
@@ -15,9 +10,8 @@ use lance_conversion_core::job::{
     BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError, JobProgress,
     JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
-use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store::{Clock, JobOrderField, JobQuery, JobStore, StoreError, SystemClock};
 
-const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
 const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,7 +50,12 @@ impl SqliteJobStore {
         Self::open_with_clock(path, Arc::new(SystemClock)).await
     }
 
-    pub(super) async fn open_with_clock(
+    /// Opens a `SQLite` job store with a caller-supplied clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `SQLite` cannot be opened, configured, or migrated.
+    pub async fn open_with_clock(
         path: impl AsRef<Path>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, StoreError> {
@@ -81,10 +80,10 @@ impl SqliteJobStore {
             .connect_with(options)
             .await
             .map_err(database_error)?;
-        sqlx::raw_sql(INITIAL_MIGRATION)
-            .execute(&pool)
+        sqlx::migrate!("./migrations")
+            .run(&pool)
             .await
-            .map_err(database_error)?;
+            .map_err(|error| StoreError::Database(error.to_string()))?;
 
         Ok(Self { pool, clock })
     }
@@ -94,28 +93,6 @@ impl SqliteJobStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(database_error)
-    }
-
-    #[cfg(test)]
-    pub(super) async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
-        let mut connection = self.pool.acquire().await.map_err(database_error)?;
-        load_job(&mut connection, destination_uri).await
-    }
-}
-
-pub(super) trait Clock: Send + Sync {
-    fn now_ms(&self) -> Result<i64, StoreError>;
-}
-
-struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> Result<i64, StoreError> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| StoreError::Worker(error.to_string()))?
-            .as_millis();
-        i64::try_from(millis).map_err(|error| StoreError::Worker(error.to_string()))
     }
 }
 
@@ -218,37 +195,10 @@ impl JobStore for SqliteJobStore {
             .checked_add(convert_lease_duration_ms)
             .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
 
-        sqlx::query(
-            "UPDATE jobs
-             SET status = 'failed',
-                 update_timestamp_ms = ?1,
-                 lease_expiration_timestamp_ms = NULL,
-                 error_reasons_json = json_insert(
-                     error_reasons_json,
-                     '$[#]',
-                     json_object(
-                         'attempt', attempt,
-                         'error_timestamp_ms', ?1,
-                         'reason', 'lease expired on final attempt'
-                     )
-                 )
-             WHERE status = 'running'
-               AND lease_expiration_timestamp_ms <= ?1
-               AND attempt >= ?2",
-        )
-        .bind(now_ms)
-        .bind(i64::from(MAX_JOB_ATTEMPTS))
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-
         let destination_rows = sqlx::query(
             "SELECT destination_uri FROM jobs
-             WHERE attempt < ?3
-               AND (
-                   status = 'queuing'
-                   OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
-               )
+             WHERE (status = 'queuing' AND attempt < ?3)
+                OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
              ORDER BY creation_timestamp_ms, destination_uri
              LIMIT ?2",
         )
@@ -265,6 +215,33 @@ impl JobStore for SqliteJobStore {
 
         let mut claimed = Vec::with_capacity(destinations.len());
         for destination_uri in destinations {
+            let job = load_job(&mut transaction, &destination_uri).await?;
+            // The last worker died or missed lease renewal on the final attempt.
+            // There is no retry left, so mark this job failed instead of reclaiming it.
+            if job.status == JobStatus::Running && job.attempt >= MAX_JOB_ATTEMPTS {
+                sqlx::query(
+                    "UPDATE jobs
+                     SET status = 'failed',
+                         update_timestamp_ms = ?2,
+                         lease_expiration_timestamp_ms = NULL,
+                         error_reasons_json = json_insert(
+                             error_reasons_json,
+                             '$[#]',
+                             json_object(
+                                 'attempt', attempt,
+                                 'error_timestamp_ms', ?2,
+                                 'reason', 'lease expired on final attempt'
+                             )
+                         )
+                     WHERE destination_uri = ?1",
+                )
+                .bind(&destination_uri)
+                .bind(now_ms)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+                continue;
+            }
             sqlx::query(
                 "UPDATE jobs
                  SET status = 'running',
@@ -291,8 +268,7 @@ impl JobStore for SqliteJobStore {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-            let job = load_job(&mut transaction, &destination_uri).await?;
-            claimed.push(job);
+            claimed.push(load_job(&mut transaction, &destination_uri).await?);
         }
 
         transaction.commit().await.map_err(database_error)?;

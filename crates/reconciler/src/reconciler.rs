@@ -163,8 +163,10 @@ mod tests {
     use lance_conversion_core::job::{IndexSpec, IndexType, Job, JobStatus, MAX_JOB_ATTEMPTS};
     use lance_converter::Converter;
     use lance_job_store::JobStore;
+    use lance_job_store_postgres::test_utils::open_isolated;
     use lance_job_store_sqlite::SqliteJobStore;
     use lance_test_support::{new_job, write_parquet as write_parquet_file};
+    use serial_test::serial;
     use tempfile::TempDir;
 
     use super::run_job;
@@ -182,9 +184,25 @@ mod tests {
     const EXPECTED_ROW_COUNT: u64 = TEST_VALUES.len() as u64;
     const TEST_INDEX_NAME: &str = "conversion_0_scalar_idx";
 
+    async fn test_stores() -> [(&'static str, Arc<dyn JobStore>); 2] {
+        [
+            (
+                "sqlite",
+                Arc::new(SqliteJobStore::open(":memory:").await.unwrap()),
+            ),
+            ("postgres", Arc::new(open_isolated().await)),
+        ]
+    }
+
     #[tokio::test]
+    #[serial]
     async fn conversion_success_marks_job_succeeded() {
-        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        for (backend, store) in test_stores().await {
+            conversion_success_marks_job_succeeded_impl(backend, store).await;
+        }
+    }
+
+    async fn conversion_success_marks_job_succeeded_impl(backend: &str, store: Arc<dyn JobStore>) {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("source");
         tokio::fs::create_dir(&source).await.unwrap();
@@ -195,7 +213,7 @@ mod tests {
             &source,
             &destination,
             vec![IndexSpec {
-                columns: vec!["value".to_owned()],
+                column: "value".to_owned(),
                 index_type: IndexType::Scalar,
             }],
         )
@@ -209,10 +227,10 @@ mod tests {
         run_claimed_job(&store, claimed).await;
 
         let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
-        assert_eq!(job.status, JobStatus::Succeeded);
-        assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT);
-        assert_eq!(job.progress.rows_total, EXPECTED_ROW_COUNT);
-        assert!(job.error_reasons.is_empty());
+        assert_eq!(job.status, JobStatus::Succeeded, "{backend}");
+        assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT, "{backend}");
+        assert_eq!(job.progress.rows_total, EXPECTED_ROW_COUNT, "{backend}");
+        assert!(job.error_reasons.is_empty(), "{backend}");
 
         let dataset = Dataset::open(destination.to_string_lossy().as_ref())
             .await
@@ -238,20 +256,27 @@ mod tests {
                     .copied()
             })
             .collect::<Vec<_>>();
-        assert_eq!(values, TEST_VALUES);
+        assert_eq!(values, TEST_VALUES, "{backend}");
         assert!(
             dataset
                 .load_indices()
                 .await
                 .unwrap()
                 .iter()
-                .any(|index| index.name == TEST_INDEX_NAME)
+                .any(|index| index.name == TEST_INDEX_NAME),
+            "{backend}"
         );
     }
 
     #[tokio::test]
+    #[serial]
     async fn conversion_failure_returns_job_to_queue() {
-        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        for (backend, store) in test_stores().await {
+            conversion_failure_returns_job_to_queue_impl(backend, store).await;
+        }
+    }
+
+    async fn conversion_failure_returns_job_to_queue_impl(backend: &str, store: Arc<dyn JobStore>) {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("empty-source");
         tokio::fs::create_dir(&source).await.unwrap();
@@ -266,13 +291,22 @@ mod tests {
         run_claimed_job(&store, claimed).await;
 
         let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
-        assert_eq!(job.status, JobStatus::Queuing);
-        assert_eq!(job.error_reasons.len(), EXPECTED_ERROR_COUNT);
+        assert_eq!(job.status, JobStatus::Queuing, "{backend}");
+        assert_eq!(job.error_reasons.len(), EXPECTED_ERROR_COUNT, "{backend}");
     }
 
     #[tokio::test]
+    #[serial]
     async fn conversion_failure_marks_job_failed_after_all_attempts() {
-        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        for (backend, store) in test_stores().await {
+            conversion_failure_marks_job_failed_after_all_attempts_impl(backend, store).await;
+        }
+    }
+
+    async fn conversion_failure_marks_job_failed_after_all_attempts_impl(
+        backend: &str,
+        store: Arc<dyn JobStore>,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("empty-source");
         tokio::fs::create_dir(&source).await.unwrap();
@@ -285,7 +319,7 @@ mod tests {
                 .await
                 .unwrap()
                 .remove(0);
-            assert_eq!(claimed.attempt, expected_attempt);
+            assert_eq!(claimed.attempt, expected_attempt, "{backend}");
 
             run_claimed_job(&store, claimed).await;
 
@@ -295,11 +329,15 @@ mod tests {
             } else {
                 JobStatus::Queuing
             };
-            assert_eq!(job.status, expected_status);
-            assert_eq!(job.error_reasons.len(), expected_attempt as usize);
+            assert_eq!(job.status, expected_status, "{backend}");
+            assert_eq!(
+                job.error_reasons.len(),
+                expected_attempt as usize,
+                "{backend}"
+            );
             let latest_error = job.error_reasons.last().unwrap();
-            assert_eq!(latest_error.attempt, expected_attempt);
-            assert!(latest_error.error_timestamp_ms > 0);
+            assert_eq!(latest_error.attempt, expected_attempt, "{backend}");
+            assert!(latest_error.error_timestamp_ms > 0, "{backend}");
         }
 
         assert!(
@@ -307,13 +345,23 @@ mod tests {
                 .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
                 .await
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "{backend}"
         );
     }
 
     #[tokio::test]
+    #[serial]
     async fn expired_job_is_reclaimed_after_previous_worker_dies() {
-        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        for (backend, store) in test_stores().await {
+            expired_job_is_reclaimed_after_previous_worker_dies_impl(backend, store).await;
+        }
+    }
+
+    async fn expired_job_is_reclaimed_after_previous_worker_dies_impl(
+        backend: &str,
+        store: Arc<dyn JobStore>,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("source");
         tokio::fs::create_dir(&source).await.unwrap();
@@ -326,30 +374,34 @@ mod tests {
             .await
             .unwrap()
             .remove(0);
-        assert_eq!(abandoned.attempt, FIRST_ATTEMPT);
+        assert_eq!(abandoned.attempt, FIRST_ATTEMPT, "{backend}");
         tokio::time::sleep(LEASE_EXPIRATION_WAIT).await;
         let reclaimed = store
             .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
             .await
             .unwrap()
             .remove(0);
-        assert_eq!(reclaimed.attempt, SECOND_ATTEMPT);
-        assert_eq!(reclaimed.error_reasons.len(), EXPECTED_ERROR_COUNT);
+        assert_eq!(reclaimed.attempt, SECOND_ATTEMPT, "{backend}");
         assert_eq!(
-            reclaimed.error_reasons[0].reason,
-            "lease expired before completion"
+            reclaimed.error_reasons.len(),
+            EXPECTED_ERROR_COUNT,
+            "{backend}"
+        );
+        assert_eq!(
+            reclaimed.error_reasons[0].reason, "lease expired before completion",
+            "{backend}"
         );
 
         run_claimed_job(&store, reclaimed).await;
 
         let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
-        assert_eq!(job.status, JobStatus::Succeeded);
-        assert_eq!(job.attempt, SECOND_ATTEMPT);
-        assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT);
+        assert_eq!(job.status, JobStatus::Succeeded, "{backend}");
+        assert_eq!(job.attempt, SECOND_ATTEMPT, "{backend}");
+        assert_eq!(job.progress.rows_written, EXPECTED_ROW_COUNT, "{backend}");
     }
 
     async fn create_job(
-        store: &SqliteJobStore,
+        store: &Arc<dyn JobStore>,
         source: &std::path::Path,
         destination: &std::path::Path,
         indices: Vec<IndexSpec>,
@@ -365,13 +417,12 @@ mod tests {
         store.create_job(job).await.unwrap();
     }
 
-    async fn run_claimed_job(store: &Arc<SqliteJobStore>, job: Job) {
+    async fn run_claimed_job(store: &Arc<dyn JobStore>, job: Job) {
         let config = Arc::new(Config::default());
         let converter = Arc::new(Converter::new(config.converter_config()).unwrap());
-        let trait_store: Arc<dyn JobStore> = store.clone();
         run_job(
             job,
-            trait_store,
+            store.clone(),
             converter,
             config,
             TEST_CONVERT_LEASE_DURATION_MS,
