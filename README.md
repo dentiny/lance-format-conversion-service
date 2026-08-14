@@ -154,8 +154,7 @@ cargo run -p lance-reconciler
 ```
 
 Both processes are required: `lance-web` accepts and displays jobs, while
-`lance-reconciler` claims and executes them. `postgres://` and `postgresql://`
-URLs are accepted. Omit `DATABASE_URL` to use
+`lance-reconciler` claims and executes them. Omit `DATABASE_URL` to use
 `postgres://127.0.0.1:5432/lance_jobs`.
 
 For same-host SQLite development, enable the `sqlite` feature:

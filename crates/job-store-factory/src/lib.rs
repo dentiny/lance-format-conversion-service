@@ -29,7 +29,7 @@ pub async fn connect(database_url: &str) -> Result<Arc<dyn JobStore>, StoreFacto
         #[cfg(feature = "sqlite")]
         "sqlite" => Ok(Arc::new(SqliteJobStore::open(location).await?)),
         #[cfg(feature = "postgres")]
-        "postgres" | "postgresql" => Ok(Arc::new(PostgresJobStore::open(database_url).await?)),
+        "postgres" => Ok(Arc::new(PostgresJobStore::open(database_url).await?)),
         _ => Err(StoreFactoryError::UnsupportedBackend(backend.to_owned())),
     }
 }
