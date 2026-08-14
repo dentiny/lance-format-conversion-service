@@ -56,9 +56,11 @@ A job can be claimed when it is:
 - `queuing` with fewer than 16 attempts; or
 - `running` with an expired lease and fewer than 16 attempts.
 
-Reclaiming an expired running job records `lease expired before completion` for
-the abandoned attempt. If the final attempt expires, the job is marked `failed`
-instead of being reclaimed.
+Claiming loads the job by destination URI, then updates that row. Reclaiming an
+expired running job records `lease expired before completion` for the abandoned
+attempt. If the selected job is already on its final attempt, it is marked
+`failed` with `lease expired on final attempt` instead of being returned to a
+worker.
 
 All progress, completion, and failure updates are fenced by destination URI,
 attempt number, running status, and an unexpired lease. A stale worker therefore

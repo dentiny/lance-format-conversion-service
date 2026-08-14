@@ -196,37 +196,10 @@ impl JobStore for SqliteJobStore {
             .checked_add(convert_lease_duration_ms)
             .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
 
-        sqlx::query(
-            "UPDATE jobs
-             SET status = 'failed',
-                 update_timestamp_ms = ?1,
-                 lease_expiration_timestamp_ms = NULL,
-                 error_reasons_json = json_insert(
-                     error_reasons_json,
-                     '$[#]',
-                     json_object(
-                         'attempt', attempt,
-                         'error_timestamp_ms', ?1,
-                         'reason', 'lease expired on final attempt'
-                     )
-                 )
-             WHERE status = 'running'
-               AND lease_expiration_timestamp_ms <= ?1
-               AND attempt >= ?2",
-        )
-        .bind(now_ms)
-        .bind(i64::from(MAX_JOB_ATTEMPTS))
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-
         let destination_rows = sqlx::query(
             "SELECT destination_uri FROM jobs
-             WHERE attempt < ?3
-               AND (
-                   status = 'queuing'
-                   OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
-               )
+             WHERE (status = 'queuing' AND attempt < ?3)
+                OR (status = 'running' AND lease_expiration_timestamp_ms <= ?1)
              ORDER BY creation_timestamp_ms, destination_uri
              LIMIT ?2",
         )
@@ -243,6 +216,31 @@ impl JobStore for SqliteJobStore {
 
         let mut claimed = Vec::with_capacity(destinations.len());
         for destination_uri in destinations {
+            let job = load_job(&mut transaction, &destination_uri).await?;
+            if job.status == JobStatus::Running && job.attempt >= MAX_JOB_ATTEMPTS {
+                sqlx::query(
+                    "UPDATE jobs
+                     SET status = 'failed',
+                         update_timestamp_ms = ?2,
+                         lease_expiration_timestamp_ms = NULL,
+                         error_reasons_json = json_insert(
+                             error_reasons_json,
+                             '$[#]',
+                             json_object(
+                                 'attempt', attempt,
+                                 'error_timestamp_ms', ?2,
+                                 'reason', 'lease expired on final attempt'
+                             )
+                         )
+                     WHERE destination_uri = ?1",
+                )
+                .bind(&destination_uri)
+                .bind(now_ms)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?;
+                continue;
+            }
             sqlx::query(
                 "UPDATE jobs
                  SET status = 'running',
@@ -269,8 +267,7 @@ impl JobStore for SqliteJobStore {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-            let job = load_job(&mut transaction, &destination_uri).await?;
-            claimed.push(job);
+            claimed.push(load_job(&mut transaction, &destination_uri).await?);
         }
 
         transaction.commit().await.map_err(database_error)?;

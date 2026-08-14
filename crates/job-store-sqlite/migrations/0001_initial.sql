@@ -55,6 +55,11 @@ CREATE INDEX jobs_queuing_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'queuing';
 
+-- Query pattern: list and reclaim running jobs in creation order.
+CREATE INDEX jobs_running_index
+    ON jobs(creation_timestamp_ms)
+    WHERE status = 'running';
+
 -- Query pattern: filter jobs by creator.
 CREATE INDEX jobs_creator_index
     ON jobs(creator);
@@ -62,6 +67,10 @@ CREATE INDEX jobs_creator_index
 -- Query pattern: list all jobs from newest to oldest.
 CREATE INDEX jobs_creation_index
     ON jobs(creation_timestamp_ms);
+
+-- Query pattern: list jobs from newest to oldest by last update.
+CREATE INDEX jobs_update_index
+    ON jobs(update_timestamp_ms);
 
 -- Query pattern: list failed jobs from newest to oldest.
 CREATE INDEX jobs_failed_index

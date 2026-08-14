@@ -62,8 +62,9 @@ pub trait JobStore: Send + Sync {
     /// Jobs are claimed from oldest to newest, with destination URI as the
     /// deterministic tie-breaker. Claiming sets the status to running,
     /// increments the attempt, and sets the lease expiration relative to the
-    /// store's current time. A zero limit or non-positive lease duration
-    /// returns an empty list.
+    /// store's current time. A selected running job whose lease expired on the
+    /// final attempt is marked failed by destination URI and is not returned.
+    /// A zero limit or non-positive lease duration returns an empty list.
     async fn claim_jobs(
         &self,
         limit: usize,
