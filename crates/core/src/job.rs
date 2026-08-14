@@ -121,11 +121,6 @@ pub struct JobProgress {
     pub rows_total: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaimedJob {
-    pub job: Job,
-}
-
 #[derive(Debug, Clone)]
 pub struct LeaseUpdate {
     pub destination_uri: String,

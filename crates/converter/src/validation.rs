@@ -9,6 +9,15 @@ use lance_conversion_core::job::BlobColumnSpec;
 
 use crate::ConversionError;
 
+/// Returns whether an Arrow column can be selected for Blob V2 ingestion.
+pub(crate) const fn is_blob_eligible(data_type: &DataType) -> bool {
+    // DataFusion presents Parquet Utf8 as Utf8View by default.
+    matches!(
+        data_type,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    )
+}
+
 pub(crate) fn validate_schema(fields: &[Arc<Field>]) -> Result<(), ConversionError> {
     for field in fields {
         if field.metadata().iter().any(|(key, value)| {
@@ -55,11 +64,7 @@ pub(crate) fn validate_blob_columns(
                 )));
             }
         };
-        // DataFusion presents Parquet Utf8 as Utf8View by default.
-        if !matches!(
-            field.data_type(),
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-        ) {
+        if !is_blob_eligible(field.data_type()) {
             return Err(ConversionError::InvalidBlobSpec(format!(
                 "selected column '{}' must have type Utf8 or LargeUtf8, found {}",
                 spec.column,

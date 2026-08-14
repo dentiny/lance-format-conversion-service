@@ -24,4 +24,5 @@ datafusion.workspace = true
 futures.workspace = true
 lance.workspace = true
 lance-job-store-sqlite.workspace = true
+lance-test-support.workspace = true
 tempfile.workspace = true

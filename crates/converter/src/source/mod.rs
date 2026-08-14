@@ -10,7 +10,7 @@ use datafusion::{
 };
 use lance_conversion_core::location::{DatasetLocation, LocationKind};
 
-use crate::ConversionError;
+use crate::{ConversionError, validation};
 
 pub(crate) struct PreparedSource {
     /// Fully resolved Parquet file locations, never directories or prefixes.
@@ -72,8 +72,21 @@ impl dyn SourceDataset {
     }
 }
 
+/// Opens, prepares, and validates one source for inspection or conversion.
+pub(crate) async fn open_validated_dataframe(
+    source_uri: &str,
+) -> Result<(Box<dyn SourceDataset>, DataFrame), ConversionError> {
+    let location = DatasetLocation::parse_location(source_uri)
+        .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
+    let source = <dyn SourceDataset>::open(location);
+    let context = SessionContext::new();
+    let dataframe = prepare_dataframe(source.as_ref(), &context).await?;
+    validation::validate_schema(dataframe.schema().fields())?;
+    Ok((source, dataframe))
+}
+
 /// Prepares a source and reads all of its Parquet files as one `DataFusion` frame.
-pub(crate) async fn prepare_dataframe(
+async fn prepare_dataframe(
     source: &dyn SourceDataset,
     context: &SessionContext,
 ) -> Result<DataFrame, ConversionError> {

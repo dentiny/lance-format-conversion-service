@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use lance_conversion_core::job::{
-    ClaimedJob, CompletionUpdate, FailureUpdate, LeaseUpdate, ProgressUpdate,
+    CompletionUpdate, FailureUpdate, Job, LeaseUpdate, ProgressUpdate,
 };
 use lance_converter::{ConversionProgress, Converter};
 use lance_job_store::{JobStore, StoreError};
@@ -51,19 +51,18 @@ pub async fn run(
 }
 
 async fn run_job(
-    claimed: ClaimedJob,
+    job: Job,
     store: Arc<dyn JobStore>,
     converter: Arc<Converter>,
     config: Arc<Config>,
     convert_lease_duration_ms: i64,
 ) -> Result<(), ReconcilerError> {
-    let job = claimed.job;
     let destination_uri = job.destination_uri.clone();
     let attempt = job.attempt;
     let progress = Arc::new(ConversionProgress::default());
     let conversion_progress = Arc::clone(&progress);
-    let mut conversion =
-        tokio::spawn(async move { converter.convert(&job, conversion_progress).await });
+    let conversion = converter.convert(&job, conversion_progress);
+    tokio::pin!(conversion);
     let now = Instant::now();
     let renew_every = Duration::from_secs(config.lease_renew_interval_secs.get());
     let progress_every = Duration::from_secs(config.progress_interval_secs.get());
@@ -73,7 +72,7 @@ async fn run_job(
     loop {
         tokio::select! {
             result = &mut conversion => {
-                return match result? {
+                return match result {
                     Ok(final_progress) => {
                         store.complete_job(CompletionUpdate {
                             destination_uri,
@@ -100,7 +99,6 @@ async fn run_job(
                     convert_lease_duration_ms,
                     progress: progress.snapshot(),
                 }).await {
-                    conversion.abort();
                     return Err(error.into());
                 }
             }
@@ -110,7 +108,6 @@ async fn run_job(
                     attempt,
                     progress: progress.snapshot(),
                 }).await {
-                    conversion.abort();
                     return Err(error.into());
                 }
             }
@@ -133,22 +130,17 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use clap::Parser;
-    use datafusion::{
-        arrow::{
-            array::{Int64Array, RecordBatch},
-            datatypes::{DataType, Field, Schema},
-        },
-        parquet::arrow::ArrowWriter,
+    use datafusion::arrow::{
+        array::{Int64Array, RecordBatch},
+        datatypes::{DataType, Field, Schema},
     };
     use futures::TryStreamExt;
     use lance::{Dataset, index::DatasetIndexExt};
-    use lance_conversion_core::{
-        job::{ClaimedJob, IndexSpec, IndexType, JobKind, JobStatus, NewJob},
-        location::DatasetLocation,
-    };
-    use lance_converter::{Converter, ConverterConfig};
+    use lance_conversion_core::job::{IndexSpec, IndexType, Job, JobStatus};
+    use lance_converter::Converter;
     use lance_job_store::JobStore;
     use lance_job_store_sqlite::SqliteJobStore;
+    use lance_test_support::{new_job, write_parquet as write_parquet_file};
     use tempfile::TempDir;
 
     use super::run_job;
@@ -269,17 +261,17 @@ mod tests {
             .await
             .unwrap()
             .remove(0);
-        assert_eq!(abandoned.job.attempt, FIRST_ATTEMPT);
+        assert_eq!(abandoned.attempt, FIRST_ATTEMPT);
         tokio::time::sleep(LEASE_EXPIRATION_WAIT).await;
         let reclaimed = store
             .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
             .await
             .unwrap()
             .remove(0);
-        assert_eq!(reclaimed.job.attempt, SECOND_ATTEMPT);
-        assert_eq!(reclaimed.job.error_reasons.len(), EXPECTED_ERROR_COUNT);
+        assert_eq!(reclaimed.attempt, SECOND_ATTEMPT);
+        assert_eq!(reclaimed.error_reasons.len(), EXPECTED_ERROR_COUNT);
         assert_eq!(
-            reclaimed.job.error_reasons[0].reason,
+            reclaimed.error_reasons[0].reason,
             "lease expired before completion"
         );
 
@@ -297,31 +289,23 @@ mod tests {
         destination: &std::path::Path,
         indices: Vec<IndexSpec>,
     ) {
-        store
-            .create_job(NewJob {
-                creator: "test-user".to_owned(),
-                source: DatasetLocation::parse_location(source.to_string_lossy()).unwrap(),
-                kind: JobKind::Copy,
-                destination: DatasetLocation::parse_location(destination.to_string_lossy())
-                    .unwrap(),
-                blob_columns: Vec::new(),
-                indices,
-                creation_timestamp_ms: TEST_CREATION_TIMESTAMP_MS,
-            })
-            .await
-            .unwrap();
+        let mut job = new_job(
+            "test-user",
+            source.to_string_lossy(),
+            destination.to_string_lossy(),
+            TEST_CREATION_TIMESTAMP_MS,
+        )
+        .unwrap();
+        job.indices = indices;
+        store.create_job(job).await.unwrap();
     }
 
-    async fn run_claimed_job(store: &Arc<SqliteJobStore>, claimed: ClaimedJob) {
+    async fn run_claimed_job(store: &Arc<SqliteJobStore>, job: Job) {
         let config = Arc::new(Config::parse_from(["lance-reconciler"]));
-        let converter = Arc::new(Converter::new(ConverterConfig {
-            target_lance_file_size_mib: config.target_lance_file_size_mib.get(),
-            blob_inline_threshold_mib: config.blob_inline_threshold_mib.get(),
-            blob_dedicated_threshold_mib: config.blob_dedicated_threshold_mib.get(),
-        }));
+        let converter = Arc::new(Converter::new(config.converter_config()).unwrap());
         let trait_store: Arc<dyn JobStore> = store.clone();
         run_job(
-            claimed,
+            job,
             trait_store,
             converter,
             config,
@@ -342,9 +326,7 @@ mod tests {
             vec![Arc::new(Int64Array::from(TEST_VALUES.to_vec()))],
         )
         .unwrap();
-        let mut writer = ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
-        writer.write(&batch).unwrap();
-        tokio::fs::write(directory.join("part.parquet"), writer.into_inner().unwrap())
+        write_parquet_file(directory.join("part.parquet"), &batch)
             .await
             .unwrap();
     }

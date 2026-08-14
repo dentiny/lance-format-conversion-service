@@ -1,5 +1,3 @@
-use datafusion::{arrow::datatypes::DataType, prelude::SessionContext};
-use lance_conversion_core::location::DatasetLocation;
 use serde::Serialize;
 
 use crate::{ConversionError, source, validation};
@@ -28,13 +26,8 @@ pub struct SourceColumn {
 pub async fn inspect_source_schema(
     source_uri: &str,
 ) -> Result<SourceSchemaInspection, ConversionError> {
-    let location = DatasetLocation::parse_location(source_uri)
-        .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-    let source = <dyn source::SourceDataset>::open(location);
-    let context = SessionContext::new();
-    let dataframe = source::prepare_dataframe(source.as_ref(), &context).await?;
+    let (_, dataframe) = source::open_validated_dataframe(source_uri).await?;
     let fields = dataframe.schema().fields();
-    validation::validate_schema(fields)?;
 
     let columns = fields
         .iter()
@@ -42,31 +35,21 @@ pub async fn inspect_source_schema(
             name: field.name().clone(),
             data_type: field.data_type().to_string(),
             nullable: field.is_nullable(),
-            blob_eligible: is_blob_eligible(field.data_type()),
+            blob_eligible: validation::is_blob_eligible(field.data_type()),
         })
         .collect();
     Ok(SourceSchemaInspection { columns })
 }
 
-/// Returns whether a `DataFusion` column can be selected for blob ingestion.
-const fn is_blob_eligible(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::sync::Arc;
 
-    use datafusion::{
-        arrow::{
-            array::{Int64Array, RecordBatch, StringArray, new_empty_array},
-            datatypes::{DataType, Field, Schema},
-        },
-        parquet::arrow::ArrowWriter,
+    use datafusion::arrow::{
+        array::{Int64Array, RecordBatch, StringArray, new_empty_array},
+        datatypes::{DataType, Field, Schema},
     };
+    use lance_test_support::write_parquet;
     use tempfile::TempDir;
 
     use super::inspect_source_schema;
@@ -98,8 +81,12 @@ mod tests {
             ],
         )
         .unwrap();
-        write_parquet(&temp_dir.path().join(FIRST_PARQUET_FILE), &first).await;
-        write_parquet(&temp_dir.path().join(SECOND_PARQUET_FILE), &second).await;
+        write_parquet(temp_dir.path().join(FIRST_PARQUET_FILE), &first)
+            .await
+            .unwrap();
+        write_parquet(temp_dir.path().join(SECOND_PARQUET_FILE), &second)
+            .await
+            .unwrap();
 
         let inspection = inspect_source_schema(temp_dir.path().to_string_lossy().as_ref())
             .await
@@ -133,7 +120,9 @@ mod tests {
             vec![new_empty_array(schema.field(0).data_type())],
         )
         .unwrap();
-        write_parquet(&temp_dir.path().join(FIRST_PARQUET_FILE), &batch).await;
+        write_parquet(temp_dir.path().join(FIRST_PARQUET_FILE), &batch)
+            .await
+            .unwrap();
 
         let inspection = inspect_source_schema(temp_dir.path().to_string_lossy().as_ref())
             .await
@@ -145,14 +134,5 @@ mod tests {
         assert!(nested.data_type.contains("Struct"));
         assert!(nested.data_type.contains("Int64"));
         assert!(!nested.blob_eligible);
-    }
-
-    /// Writes one record batch to a local Parquet file for inspection tests.
-    async fn write_parquet(path: &Path, batch: &RecordBatch) {
-        let mut writer = ArrowWriter::try_new(Vec::new(), batch.schema(), None).unwrap();
-        writer.write(batch).unwrap();
-        tokio::fs::write(path, writer.into_inner().unwrap())
-            .await
-            .unwrap();
     }
 }

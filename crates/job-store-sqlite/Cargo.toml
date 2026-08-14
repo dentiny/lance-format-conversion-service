@@ -20,5 +20,6 @@ sqlx.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }
 
 [dev-dependencies]
+lance-test-support.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

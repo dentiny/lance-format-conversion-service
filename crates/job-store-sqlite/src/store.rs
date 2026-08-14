@@ -12,8 +12,8 @@ use sqlx::{
 };
 
 use lance_conversion_core::job::{
-    BlobColumnSpec, ClaimedJob, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError,
-    JobProgress, JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
+    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError, JobProgress,
+    JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
@@ -208,7 +208,7 @@ impl JobStore for SqliteJobStore {
         &self,
         limit: usize,
         convert_lease_duration_ms: i64,
-    ) -> Result<Vec<ClaimedJob>, StoreError> {
+    ) -> Result<Vec<Job>, StoreError> {
         if limit == 0 || convert_lease_duration_ms <= 0 {
             return Ok(Vec::new());
         }
@@ -293,7 +293,7 @@ impl JobStore for SqliteJobStore {
             .await
             .map_err(database_error)?;
             let job = load_job(&mut transaction, &destination_uri).await?;
-            claimed.push(ClaimedJob { job });
+            claimed.push(job);
         }
 
         transaction.commit().await.map_err(database_error)?;
