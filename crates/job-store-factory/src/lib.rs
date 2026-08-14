@@ -13,23 +13,34 @@ compile_error!("enable at least one of the `postgres` or `sqlite` features");
 
 /// Opens the job-store backend selected by `database_url`.
 ///
+/// `max_connections` sizes the PostgreSQL pool. SQLite always uses one
+/// connection.
+///
 /// # Errors
 ///
 /// Returns an error when the URL is malformed, the backend is unsupported, or
 /// the selected store cannot be opened.
-pub async fn connect(database_url: &str) -> Result<Arc<dyn JobStore>, StoreFactoryError> {
+pub async fn connect(
+    database_url: &str,
+    max_connections: u32,
+) -> Result<Arc<dyn JobStore>, StoreFactoryError> {
     let (backend, location) = database_url
         .split_once("://")
         .ok_or(StoreFactoryError::InvalidDatabaseUrl)?;
     if location.is_empty() {
         return Err(StoreFactoryError::InvalidDatabaseUrl);
     }
+    if max_connections == 0 {
+        return Err(StoreFactoryError::InvalidMaxConnections);
+    }
 
     match backend {
         #[cfg(feature = "sqlite")]
         "sqlite" => Ok(Arc::new(SqliteJobStore::open(location).await?)),
         #[cfg(feature = "postgres")]
-        "postgres" => Ok(Arc::new(PostgresJobStore::open(database_url).await?)),
+        "postgres" => Ok(Arc::new(
+            PostgresJobStore::open(database_url, max_connections).await?,
+        )),
         _ => Err(StoreFactoryError::UnsupportedBackend(backend.to_owned())),
     }
 }
@@ -38,6 +49,8 @@ pub async fn connect(database_url: &str) -> Result<Arc<dyn JobStore>, StoreFacto
 pub enum StoreFactoryError {
     #[error("database URL must include a backend scheme and location")]
     InvalidDatabaseUrl,
+    #[error("database max connections must be at least 1")]
+    InvalidMaxConnections,
     #[error("unsupported database backend: {0}")]
     UnsupportedBackend(String),
     #[error(transparent)]

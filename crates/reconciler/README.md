@@ -96,6 +96,8 @@ Configuration is read only from environment variables:
 
 - `DATABASE_URL` — default `postgres://127.0.0.1:5432/lance_jobs`. SQLite URLs
   require building with `--features sqlite`
+- `DATABASE_MAX_CONNECTIONS` — PostgreSQL pool size, default `8`. Ignored for
+  SQLite
 - `WORKER_COUNT` — default `256`
 - `POLL_INTERVAL_MS` — default `1000`
 - `LEASE_DURATION_SECS` — default `900`

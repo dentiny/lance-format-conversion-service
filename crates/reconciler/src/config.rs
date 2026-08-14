@@ -1,10 +1,11 @@
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
 use lance_conversion_core::env::{self, EnvError};
 use lance_converter::ConverterConfig;
 use thiserror::Error;
 
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
+const DATABASE_MAX_CONNECTIONS_ENV: &str = "DATABASE_MAX_CONNECTIONS";
 const WORKER_COUNT_ENV: &str = "WORKER_COUNT";
 const POLL_INTERVAL_MS_ENV: &str = "POLL_INTERVAL_MS";
 const LEASE_DURATION_SECS_ENV: &str = "LEASE_DURATION_SECS";
@@ -16,6 +17,8 @@ const BLOB_DEDICATED_THRESHOLD_MIB_ENV: &str = "BLOB_DEDICATED_THRESHOLD_MIB";
 
 /// Default job-store database URL.
 pub const DEFAULT_DATABASE_URL: &str = "postgres://127.0.0.1:5432/lance_jobs";
+/// Default PostgreSQL connection pool size.
+pub const DEFAULT_DATABASE_MAX_CONNECTIONS: NonZeroU32 = NonZeroU32::new(8).unwrap();
 /// Default number of conversion workers.
 pub const DEFAULT_WORKER_COUNT: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 /// Default queue polling interval in milliseconds.
@@ -36,6 +39,7 @@ pub const DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB: NonZeroU64 = NonZeroU64::new(32)
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
+    pub database_max_connections: NonZeroU32,
     pub worker_count: NonZeroUsize,
     pub poll_interval_ms: NonZeroU64,
     pub lease_duration_secs: NonZeroU64,
@@ -56,6 +60,10 @@ impl Config {
     pub fn from_env() -> Result<Self, EnvError> {
         Ok(Self {
             database_url: env::string_or(DATABASE_URL_ENV, DEFAULT_DATABASE_URL)?,
+            database_max_connections: env::parse_or(
+                DATABASE_MAX_CONNECTIONS_ENV,
+                DEFAULT_DATABASE_MAX_CONNECTIONS,
+            )?,
             worker_count: env::parse_or(WORKER_COUNT_ENV, DEFAULT_WORKER_COUNT)?,
             poll_interval_ms: env::parse_or(POLL_INTERVAL_MS_ENV, DEFAULT_POLL_INTERVAL_MS)?,
             lease_duration_secs: env::parse_or(
@@ -129,6 +137,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             database_url: DEFAULT_DATABASE_URL.to_owned(),
+            database_max_connections: DEFAULT_DATABASE_MAX_CONNECTIONS,
             worker_count: DEFAULT_WORKER_COUNT,
             poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
             lease_duration_secs: DEFAULT_LEASE_DURATION_SECS,

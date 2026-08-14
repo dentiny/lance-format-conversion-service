@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::from_env()?;
     config.validate()?;
 
-    let store = connect(&config.database_url).await?;
+    let store = connect(&config.database_url, config.database_max_connections.get()).await?;
     let converter = Arc::new(Converter::new(config.converter_config())?);
     run(store, converter, config).await?;
     Ok(())

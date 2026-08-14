@@ -12,8 +12,6 @@ use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 
 use lance_job_store::StoreError;
 
-const DEFAULT_MAX_CONNECTIONS: u32 = 8;
-
 #[derive(Clone)]
 pub struct PostgresJobStore {
     pool: PgPool,
@@ -21,21 +19,15 @@ pub struct PostgresJobStore {
 }
 
 impl PostgresJobStore {
-    /// Opens a `PostgreSQL` job store.
+    /// Opens a `PostgreSQL` job store with a bounded connection pool.
     ///
     /// The schema is applied out of band (Terraform). This only connects.
     ///
     /// # Errors
     ///
     /// Returns an error when `PostgreSQL` cannot be reached or configured.
-    pub async fn open(database_url: &str) -> Result<Self, StoreError> {
-        Self::connect(
-            database_url,
-            Arc::new(SystemClock),
-            DEFAULT_MAX_CONNECTIONS,
-            None,
-        )
-        .await
+    pub async fn open(database_url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        Self::connect(database_url, Arc::new(SystemClock), max_connections, None).await
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -58,6 +50,11 @@ impl PostgresJobStore {
         max_connections: u32,
         schema: Option<&str>,
     ) -> Result<Self, StoreError> {
+        if max_connections == 0 {
+            return Err(StoreError::InvalidInput(
+                "max connections must be at least 1".to_owned(),
+            ));
+        }
         let search_path = match schema {
             Some(schema) => {
                 create_schema(database_url, schema).await?;
