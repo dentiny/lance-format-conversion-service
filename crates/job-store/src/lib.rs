@@ -5,6 +5,10 @@ use lance_conversion_core::job::{
     CompletionUpdate, FailureUpdate, Job, LeaseUpdate, NewJob, ProgressUpdate,
 };
 
+mod clock;
+
+pub use clock::{Clock, SystemClock, now_ms};
+
 /// Filters, orders, and bounds a job query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobQuery {

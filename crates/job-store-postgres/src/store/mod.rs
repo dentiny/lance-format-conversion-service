@@ -2,15 +2,11 @@ mod jobs;
 mod row;
 mod types;
 
-use std::{
-    str::FromStr,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{str::FromStr, sync::Arc};
 
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 
-use lance_job_store::StoreError;
+use lance_job_store::{Clock, StoreError, SystemClock};
 
 #[derive(Clone)]
 pub struct PostgresJobStore {
@@ -27,20 +23,16 @@ impl PostgresJobStore {
     ///
     /// Returns an error when `PostgreSQL` cannot be reached or configured.
     pub async fn open(database_url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        Self::connect(database_url, Arc::new(SystemClock), max_connections, None).await
+        Self::connect(database_url, Arc::new(SystemClock), max_connections).await
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn open_with_clock(
         database_url: &str,
         clock: Arc<dyn Clock>,
-        schema: &str,
     ) -> Result<Self, StoreError> {
-        let store = Self::connect(database_url, clock, 1, Some(schema)).await?;
-        sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
-            .execute(&store.pool)
-            .await
-            .map_err(database_error)?;
+        let store = Self::connect(database_url, clock, 1).await?;
+        apply_test_schema(&store.pool).await?;
         Ok(store)
     }
 
@@ -48,35 +40,14 @@ impl PostgresJobStore {
         database_url: &str,
         clock: Arc<dyn Clock>,
         max_connections: u32,
-        schema: Option<&str>,
     ) -> Result<Self, StoreError> {
         if max_connections == 0 {
             return Err(StoreError::InvalidInput(
                 "max connections must be at least 1".to_owned(),
             ));
         }
-        let search_path = match schema {
-            Some(schema) => {
-                create_schema(database_url, schema).await?;
-                Some(format!("{}, public", quote_ident(schema)?))
-            }
-            None => None,
-        };
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .after_connect(move |connection, _metadata| {
-                let search_path = search_path.clone();
-                Box::pin(async move {
-                    if let Some(search_path) = search_path.as_deref() {
-                        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-                            "SET search_path TO {search_path}"
-                        )))
-                        .execute(&mut *connection)
-                        .await?;
-                    }
-                    Ok(())
-                })
-            })
             .connect(database_url)
             .await
             .map_err(database_error)?;
@@ -98,50 +69,28 @@ impl PostgresJobStore {
     }
 }
 
-pub(crate) trait Clock: Send + Sync {
-    fn now_ms(&self) -> Result<i64, StoreError>;
-}
-
-pub(crate) struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> Result<i64, StoreError> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| StoreError::Worker(error.to_string()))?
-            .as_millis();
-        i64::try_from(millis).map_err(|error| StoreError::Worker(error.to_string()))
+#[cfg(any(test, feature = "test-utils"))]
+async fn apply_test_schema(pool: &PgPool) -> Result<(), StoreError> {
+    let jobs_exist = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_tables
+            WHERE schemaname = 'public' AND tablename = 'jobs'
+        )",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(database_error)?;
+    if !jobs_exist {
+        sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
     }
-}
-
-async fn create_schema(database_url: &str, schema: &str) -> Result<(), StoreError> {
-    let ident = quote_ident(schema)?;
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(database_url)
+    sqlx::query("TRUNCATE TABLE jobs")
+        .execute(pool)
         .await
         .map_err(database_error)?;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {ident}")))
-        .execute(&pool)
-        .await
-        .map_err(database_error)?;
-    pool.close().await;
     Ok(())
-}
-
-fn quote_ident(name: &str) -> Result<String, StoreError> {
-    let valid = !name.is_empty()
-        && !name.starts_with(|character: char| character.is_ascii_digit())
-        && name.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
-        });
-    if valid {
-        Ok(format!("\"{name}\""))
-    } else {
-        Err(StoreError::InvalidInput(
-            "schema name must be a lowercase SQL identifier".to_owned(),
-        ))
-    }
 }
 
 fn parse_value<T>(value: &str) -> Result<T, StoreError>

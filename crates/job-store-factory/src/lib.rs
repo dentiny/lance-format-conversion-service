@@ -13,13 +13,13 @@ compile_error!("enable at least one of the `postgres` or `sqlite` features");
 
 /// Opens the job-store backend selected by `database_url`.
 ///
-/// `max_connections` sizes the PostgreSQL pool. SQLite always uses one
+/// `max_connections` sizes the `PostgreSQL` pool. `SQLite` always uses one
 /// connection.
 ///
 /// # Errors
 ///
-/// Returns an error when the URL is malformed, the backend is unsupported, or
-/// the selected store cannot be opened.
+/// Returns an error when the URL is malformed, `max_connections` is 0, the
+/// backend is unsupported, or the selected store cannot be opened.
 pub async fn connect(
     database_url: &str,
     max_connections: u32,

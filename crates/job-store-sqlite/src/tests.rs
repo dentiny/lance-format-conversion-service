@@ -7,10 +7,10 @@ use lance_conversion_core::job::{
     BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobProgress, JobStatus,
     LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
 };
-use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store::{Clock, JobOrderField, JobQuery, JobStore, StoreError};
 use lance_test_support::new_job;
 
-use super::store::{Clock, SqliteJobStore};
+use super::store::SqliteJobStore;
 
 struct TestClock(AtomicI64);
 

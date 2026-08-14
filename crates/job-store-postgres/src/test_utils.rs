@@ -1,11 +1,10 @@
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{Arc, OnceLock};
 
 use pglite_oxide::PgliteServer;
 
-use super::store::{Clock, PostgresJobStore, SystemClock};
+use lance_job_store::{Clock, SystemClock};
+
+use super::store::PostgresJobStore;
 
 /// Opens an isolated PGlite-backed job store for tests.
 pub async fn open_isolated() -> PostgresJobStore {
@@ -14,9 +13,7 @@ pub async fn open_isolated() -> PostgresJobStore {
 
 /// Opens an isolated PGlite-backed job store with a caller-supplied clock.
 pub(crate) async fn open_isolated_with_clock(clock: Arc<dyn Clock>) -> PostgresJobStore {
-    static SCHEMA: AtomicU64 = AtomicU64::new(1);
-    let schema = format!("job_store_{}", SCHEMA.fetch_add(1, Ordering::Relaxed));
-    PostgresJobStore::open_with_clock(&pglite_url(), clock, &schema)
+    PostgresJobStore::open_with_clock(&pglite_url(), clock)
         .await
         .expect("failed to open isolated postgres job store")
 }

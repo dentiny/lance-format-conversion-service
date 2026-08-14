@@ -136,6 +136,7 @@ Start the web control plane in the first terminal:
 ```shell
 LISTEN_ADDRESS=127.0.0.1:8080 \
 DATABASE_URL=postgres://user:pass@127.0.0.1:5432/lance_jobs \
+DATABASE_MAX_CONNECTIONS=8 \
 cargo run -p lance-web
 ```
 
@@ -143,6 +144,7 @@ Start the reconciler against the same database in a second terminal:
 
 ```shell
 DATABASE_URL=postgres://user:pass@127.0.0.1:5432/lance_jobs \
+DATABASE_MAX_CONNECTIONS=8 \
 WORKER_COUNT=4 \
 POLL_INTERVAL_MS=1000 \
 LEASE_DURATION_SECS=900 \

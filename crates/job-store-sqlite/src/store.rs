@@ -1,9 +1,4 @@
-use std::{
-    path::Path,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use sqlx::{
@@ -15,7 +10,7 @@ use lance_conversion_core::job::{
     BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError, JobProgress,
     JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
 };
-use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store::{Clock, JobOrderField, JobQuery, JobStore, StoreError, SystemClock};
 
 const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
 const INDICES_JSON_COLUMN: &str = "indices_json";
@@ -99,22 +94,6 @@ impl SqliteJobStore {
     pub(super) async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
         let mut connection = self.pool.acquire().await.map_err(database_error)?;
         load_job(&mut connection, destination_uri).await
-    }
-}
-
-pub(super) trait Clock: Send + Sync {
-    fn now_ms(&self) -> Result<i64, StoreError>;
-}
-
-struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> Result<i64, StoreError> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| StoreError::Worker(error.to_string()))?
-            .as_millis();
-        i64::try_from(millis).map_err(|error| StoreError::Worker(error.to_string()))
     }
 }
 

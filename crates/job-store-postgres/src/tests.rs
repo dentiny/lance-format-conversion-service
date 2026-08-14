@@ -7,11 +7,11 @@ use lance_conversion_core::job::{
     BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobProgress, JobStatus,
     LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
 };
-use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store::{Clock, JobOrderField, JobQuery, JobStore, StoreError};
 use lance_test_support::new_job;
 use serial_test::serial;
 
-use super::store::{Clock, PostgresJobStore};
+use super::store::PostgresJobStore;
 use super::test_utils;
 
 struct TestClock(AtomicI64);

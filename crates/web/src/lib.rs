@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 pub mod config;
 
@@ -20,7 +17,7 @@ use lance_conversion_core::{
     job::{BlobColumnSpec, IndexSpec, Job, NewJob},
     location::DatasetLocation,
 };
-use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError, now_ms};
 
 const DEFAULT_JOB_LIST_LIMIT: usize = 100;
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -185,22 +182,12 @@ async fn list_jobs(
     ))
 }
 
-fn now_ms() -> Result<i64, ApiError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| ApiError::Internal(error.to_string()))?
-        .as_millis();
-    i64::try_from(millis).map_err(|error| ApiError::Internal(error.to_string()))
-}
-
 #[derive(Debug, Error)]
 enum ApiError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
     Store(#[from] StoreError),
-    #[error("{0}")]
-    Internal(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -220,8 +207,7 @@ impl IntoResponse for ApiError {
                 | StoreError::Conflict(_)
                 | StoreError::Database(_)
                 | StoreError::Worker(_),
-            )
-            | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
             "internal server error".to_owned()
