@@ -1,8 +1,12 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    sync::Arc,
+};
 
 use arrow::datatypes::{DataType, Field};
 use lance::{Dataset, deps::datafusion::error::DataFusionError};
 use lance_conversion_core::job::BlobColumnSpec;
+use parquet::variant::VariantType;
 
 use crate::ConversionError;
 
@@ -17,23 +21,32 @@ pub(crate) const fn is_blob_eligible(data_type: &DataType) -> bool {
 
 pub(crate) fn validate_schema(fields: &[Arc<Field>]) -> Result<(), ConversionError> {
     for field in fields {
-        if field.metadata().iter().any(|(key, value)| {
-            key.to_lowercase().contains("variant") || value.to_lowercase().contains("variant")
-        }) {
-            return Err(ConversionError::UnsupportedType(format!(
-                "column '{}' uses unsupported variant metadata",
-                field.name()
-            )));
-        }
-        validate_type(field.name(), field.data_type())?;
+        validate_field(field)?;
     }
     Ok(())
 }
 
+/// Validates requested blob columns against the source schema and returns their
+/// unique names for efficient batch transformation.
+///
+/// Rejects duplicate selections, missing columns, and columns whose Arrow type
+/// cannot contain blob source URLs.
 pub(crate) fn validate_blob_columns(
     fields: &[Arc<Field>],
     blob_columns: &[BlobColumnSpec],
 ) -> Result<HashSet<String>, ConversionError> {
+    let mut fields_by_name = HashMap::with_capacity(fields.len());
+    for field in fields {
+        match fields_by_name.entry(field.name().as_str()) {
+            Entry::Vacant(entry) => {
+                entry.insert(Some(field));
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(None);
+            }
+        }
+    }
+
     let mut selected = HashSet::with_capacity(blob_columns.len());
     for spec in blob_columns {
         if !selected.insert(spec.column.clone()) {
@@ -42,19 +55,15 @@ pub(crate) fn validate_blob_columns(
                 spec.column
             )));
         }
-        let matches = fields
-            .iter()
-            .filter(|field| field.name() == &spec.column)
-            .collect::<Vec<_>>();
-        let field = match matches.as_slice() {
-            [] => {
+        let field = match fields_by_name.get(spec.column.as_str()) {
+            None => {
                 return Err(ConversionError::InvalidBlobSpec(format!(
                     "selected column '{}' does not exist",
                     spec.column
                 )));
             }
-            [field] => *field,
-            _ => {
+            Some(Some(field)) => field,
+            Some(None) => {
                 return Err(ConversionError::InvalidBlobSpec(format!(
                     "selected column '{}' is duplicated in the source schema",
                     spec.column
@@ -121,10 +130,10 @@ fn validate_type(column: &str, data_type: &DataType) -> Result<(), ConversionErr
         | DataType::LargeList(field)
         | DataType::LargeListView(field)
         | DataType::FixedSizeList(field, _)
-        | DataType::Map(field, _) => validate_type(column, field.data_type()),
+        | DataType::Map(field, _) => validate_field(field),
         DataType::Struct(fields) => {
             for field in fields {
-                validate_type(field.name(), field.data_type())?;
+                validate_field(field)?;
             }
             Ok(())
         }
@@ -132,12 +141,23 @@ fn validate_type(column: &str, data_type: &DataType) -> Result<(), ConversionErr
     }
 }
 
+fn validate_field(field: &Field) -> Result<(), ConversionError> {
+    if field.has_valid_extension_type::<VariantType>() {
+        return Err(ConversionError::UnsupportedType(format!(
+            "column '{}' uses unsupported Parquet VARIANT data",
+            field.name()
+        )));
+    }
+    validate_type(field.name(), field.data_type())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field};
     use lance_conversion_core::job::BlobColumnSpec;
+    use parquet::variant::VariantType;
 
     use super::{validate_blob_columns, validate_schema};
     use crate::ConversionError;
@@ -157,12 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_variant_metadata() {
-        let variant =
-            Field::new("variant", DataType::Binary, true).with_metadata(HashMap::from([(
-                "PARQUET:logical_type".to_owned(),
-                "VARIANT".to_owned(),
-            )]));
+    fn rejects_variant_extension_type() {
+        let variant = Field::new(
+            "variant",
+            DataType::Struct(Vec::<Field>::new().into()),
+            true,
+        )
+        .with_extension_type(VariantType);
         assert!(matches!(
             validate_schema(&[Arc::new(variant)]),
             Err(ConversionError::UnsupportedType(_))
