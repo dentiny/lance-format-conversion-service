@@ -143,6 +143,8 @@ impl JobStore for PostgresJobStore {
         let mut claimed = Vec::with_capacity(destinations.len());
         for destination_uri in destinations {
             let job = load_job(&mut transaction, &destination_uri).await?;
+            // The last worker died or missed lease renewal on the final attempt.
+            // There is no retry left, so mark this job failed instead of reclaiming it.
             if job.status == JobStatus::Running && job.attempt >= MAX_JOB_ATTEMPTS {
                 sqlx::query(
                     "UPDATE jobs
