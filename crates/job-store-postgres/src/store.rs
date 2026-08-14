@@ -16,7 +16,6 @@ use lance_conversion_core::job::{
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
-const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const DEFAULT_MAX_CONNECTIONS: u32 = 8;
 const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
@@ -180,12 +179,13 @@ pub struct PostgresJobStore {
 }
 
 impl PostgresJobStore {
-    /// Opens a `PostgreSQL` job store and applies embedded migrations.
+    /// Opens a `PostgreSQL` job store.
+    ///
+    /// The schema is applied out of band (Terraform). This only connects.
     ///
     /// # Errors
     ///
-    /// Returns an error when `PostgreSQL` cannot be reached, configured, or
-    /// migrated.
+    /// Returns an error when `PostgreSQL` cannot be reached or configured.
     pub async fn open(database_url: &str) -> Result<Self, StoreError> {
         Self::connect(
             database_url,
@@ -202,7 +202,12 @@ impl PostgresJobStore {
         clock: Arc<dyn Clock>,
         schema: &str,
     ) -> Result<Self, StoreError> {
-        Self::connect(database_url, clock, 1, Some(schema)).await
+        let store = Self::connect(database_url, clock, 1, Some(schema)).await?;
+        sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
+            .execute(&store.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(store)
     }
 
     async fn connect(
@@ -234,10 +239,6 @@ impl PostgresJobStore {
                 })
             })
             .connect(database_url)
-            .await
-            .map_err(database_error)?;
-        sqlx::raw_sql(INITIAL_MIGRATION)
-            .execute(&pool)
             .await
             .map_err(database_error)?;
 

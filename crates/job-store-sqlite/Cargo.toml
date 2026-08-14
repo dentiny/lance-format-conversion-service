@@ -16,7 +16,7 @@ lance-conversion-core.workspace = true
 lance-job-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sqlx = { workspace = true, features = ["sqlite"] }
+sqlx = { workspace = true, features = ["sqlite", "macros", "migrate"] }
 tokio = { workspace = true, features = ["fs", "rt"] }
 
 [dev-dependencies]

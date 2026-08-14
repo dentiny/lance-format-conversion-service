@@ -86,7 +86,7 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - `crates/job-store-factory`: database URL dispatch and backend construction.
   `postgres` is the default Cargo feature; `sqlite` is opt-in
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
-- `crates/job-store-postgres`: PostgreSQL store, embedded migrations, and
+- `crates/job-store-postgres`: PostgreSQL store, Terraform-managed schema SQL, and
   pglite-oxide integration tests
 - `crates/web`: `lance-web`, the HTTP job control plane and embedded UI
 - [`crates/reconciler`](crates/reconciler/README.md): bounded polling, lease

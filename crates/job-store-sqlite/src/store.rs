@@ -17,7 +17,6 @@ use lance_conversion_core::job::{
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
-const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
 const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -81,10 +80,10 @@ impl SqliteJobStore {
             .connect_with(options)
             .await
             .map_err(database_error)?;
-        sqlx::raw_sql(INITIAL_MIGRATION)
-            .execute(&pool)
+        sqlx::migrate!("./migrations")
+            .run(&pool)
             .await
-            .map_err(database_error)?;
+            .map_err(|error| StoreError::Database(error.to_string()))?;
 
         Ok(Self { pool, clock })
     }

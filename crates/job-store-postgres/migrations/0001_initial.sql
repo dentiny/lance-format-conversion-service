@@ -1,62 +1,34 @@
-DO $migration$
-BEGIN
-    CREATE TYPE blob_column_spec AS (
-        "column" TEXT
-    );
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END
-$migration$;
+-- Applied by Terraform in production. Tests execute this file against PGlite.
 
-DO $migration$
-BEGIN
-    CREATE TYPE index_spec AS (
-        "column" TEXT,
-        index_type TEXT
-    );
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END
-$migration$;
+CREATE TYPE blob_column_spec AS (
+    "column" TEXT
+);
 
-DO $migration$
-BEGIN
-    CREATE TYPE job_status AS ENUM (
-        'queuing',
-        'running',
-        'succeeded',
-        'failed'
-    );
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END
-$migration$;
+CREATE TYPE index_spec AS (
+    "column" TEXT,
+    index_type TEXT
+);
 
-DO $migration$
-BEGIN
-    CREATE TYPE job_error AS (
-        attempt BIGINT,
-        error_timestamp_ms BIGINT,
-        reason TEXT
-    );
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END
-$migration$;
+CREATE TYPE job_status AS ENUM (
+    'queuing',
+    'running',
+    'succeeded',
+    'failed'
+);
 
-DO $migration$
-BEGIN
-    CREATE TYPE job_progress AS (
-        rows_read BIGINT,
-        rows_written BIGINT,
-        rows_total BIGINT
-    );
-EXCEPTION
-    WHEN duplicate_object THEN NULL;
-END
-$migration$;
+CREATE TYPE job_error AS (
+    attempt BIGINT,
+    error_timestamp_ms BIGINT,
+    reason TEXT
+);
 
-CREATE TABLE IF NOT EXISTS jobs (
+CREATE TYPE job_progress AS (
+    rows_read BIGINT,
+    rows_written BIGINT,
+    rows_total BIGINT
+);
+
+CREATE TABLE jobs (
     -- Job identity and conversion request.
     creator TEXT NOT NULL,
     source_uri TEXT NOT NULL,
@@ -99,24 +71,24 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 -- Query pattern: claim the oldest queuing jobs in creation order.
-CREATE INDEX IF NOT EXISTS jobs_queuing_index
+CREATE INDEX jobs_queuing_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'queuing';
 
 -- Query pattern: reclaim running jobs whose lease has expired.
-CREATE INDEX IF NOT EXISTS jobs_expired_running_index
+CREATE INDEX jobs_expired_running_index
     ON jobs(lease_expiration_timestamp_ms)
     WHERE status = 'running';
 
 -- Query pattern: filter jobs by creator.
-CREATE INDEX IF NOT EXISTS jobs_creator_index
+CREATE INDEX jobs_creator_index
     ON jobs(creator);
 
 -- Query pattern: list all jobs from newest to oldest.
-CREATE INDEX IF NOT EXISTS jobs_creation_index
+CREATE INDEX jobs_creation_index
     ON jobs(creation_timestamp_ms);
 
 -- Query pattern: list failed jobs from newest to oldest.
-CREATE INDEX IF NOT EXISTS jobs_failed_index
+CREATE INDEX jobs_failed_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'failed';
