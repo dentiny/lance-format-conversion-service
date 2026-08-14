@@ -44,6 +44,18 @@ EXCEPTION
 END
 $migration$;
 
+DO $migration$
+BEGIN
+    CREATE TYPE job_progress AS (
+        rows_read BIGINT,
+        rows_written BIGINT,
+        rows_total BIGINT
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END
+$migration$;
+
 CREATE TABLE IF NOT EXISTS jobs (
     -- Job identity and conversion request.
     creator TEXT NOT NULL,
@@ -65,9 +77,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     lease_expiration_timestamp_ms BIGINT,
 
     -- Job progress.
-    rows_read BIGINT NOT NULL DEFAULT 0 CHECK (rows_read >= 0),
-    rows_written BIGINT NOT NULL DEFAULT 0 CHECK (rows_written >= 0),
-    rows_total BIGINT NOT NULL DEFAULT 0 CHECK (rows_total >= 0),
+    progress job_progress NOT NULL DEFAULT (0, 0, 0)::job_progress,
 
     -- Cross-column invariants.
     CHECK (
@@ -75,8 +85,16 @@ CREATE TABLE IF NOT EXISTS jobs (
         OR status != 'running'
     ),
     CHECK (
-        rows_total = 0
-        OR (rows_read <= rows_total AND rows_written <= rows_total)
+        (progress).rows_read >= 0
+        AND (progress).rows_written >= 0
+        AND (progress).rows_total >= 0
+    ),
+    CHECK (
+        (progress).rows_total = 0
+        OR (
+            (progress).rows_read <= (progress).rows_total
+            AND (progress).rows_written <= (progress).rows_total
+        )
     )
 );
 

@@ -20,22 +20,15 @@ const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const DEFAULT_MAX_CONNECTIONS: u32 = 8;
 const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
-    error_reasons, lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    error_reasons, lease_expiration_timestamp_ms, progress,
     blob_columns, indices
     FROM jobs";
 const LOAD_JOB_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
-    error_reasons, lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    error_reasons, lease_expiration_timestamp_ms, progress,
     blob_columns, indices
     FROM jobs
     WHERE destination_uri = $1";
-
-#[allow(clippy::struct_field_names)]
-struct SqlProgress {
-    rows_read: i64,
-    rows_written: i64,
-    rows_total: i64,
-}
 
 #[derive(sqlx::Type)]
 #[sqlx(type_name = "blob_column_spec")]
@@ -143,6 +136,39 @@ impl TryFrom<PgJobError> for JobError {
             attempt: i64_to_u32(error.attempt)?,
             error_timestamp_ms: error.error_timestamp_ms,
             reason: error.reason,
+        })
+    }
+}
+
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "job_progress")]
+#[allow(clippy::struct_field_names)]
+struct PgJobProgress {
+    rows_read: i64,
+    rows_written: i64,
+    rows_total: i64,
+}
+
+impl TryFrom<JobProgress> for PgJobProgress {
+    type Error = StoreError;
+
+    fn try_from(progress: JobProgress) -> Result<Self, Self::Error> {
+        Ok(Self {
+            rows_read: u64_as_i64(progress.rows_read)?,
+            rows_written: u64_as_i64(progress.rows_written)?,
+            rows_total: u64_as_i64(progress.rows_total)?,
+        })
+    }
+}
+
+impl TryFrom<PgJobProgress> for JobProgress {
+    type Error = StoreError;
+
+    fn try_from(progress: PgJobProgress) -> Result<Self, Self::Error> {
+        Ok(Self {
+            rows_read: i64_to_u64(progress.rows_read)?,
+            rows_written: i64_to_u64(progress.rows_written)?,
+            rows_total: i64_to_u64(progress.rows_total)?,
         })
     }
 }
@@ -446,14 +472,12 @@ impl JobStore for PostgresJobStore {
         let lease_expiration_timestamp_ms = now_ms
             .checked_add(update.convert_lease_duration_ms)
             .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
-        let progress = progress_as_i64(update.progress)?;
+        let progress = PgJobProgress::try_from(update.progress)?;
         let changed = sqlx::query(
             "UPDATE jobs
              SET lease_expiration_timestamp_ms = $3,
                  update_timestamp_ms = $4,
-                 rows_read = $5,
-                 rows_written = $6,
-                 rows_total = $7
+                 progress = $5
              WHERE destination_uri = $1
                AND status = 'running'
                AND attempt = $2
@@ -463,9 +487,7 @@ impl JobStore for PostgresJobStore {
         .bind(i64::from(update.attempt))
         .bind(lease_expiration_timestamp_ms)
         .bind(now_ms)
-        .bind(progress.rows_read)
-        .bind(progress.rows_written)
-        .bind(progress.rows_total)
+        .bind(progress)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -489,13 +511,11 @@ impl JobStore for PostgresJobStore {
             update.progress,
         )
         .await?;
-        let progress = progress_as_i64(update.progress)?;
+        let progress = PgJobProgress::try_from(update.progress)?;
         let changed = sqlx::query(
             "UPDATE jobs
              SET update_timestamp_ms = $3,
-                 rows_read = $4,
-                 rows_written = $5,
-                 rows_total = $6
+                 progress = $4
              WHERE destination_uri = $1
                AND status = 'running'
                AND attempt = $2
@@ -504,9 +524,7 @@ impl JobStore for PostgresJobStore {
         .bind(&update.destination_uri)
         .bind(i64::from(update.attempt))
         .bind(now_ms)
-        .bind(progress.rows_read)
-        .bind(progress.rows_written)
-        .bind(progress.rows_total)
+        .bind(progress)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -530,15 +548,13 @@ impl JobStore for PostgresJobStore {
             update.progress,
         )
         .await?;
-        let progress = progress_as_i64(update.progress)?;
+        let progress = PgJobProgress::try_from(update.progress)?;
         let changed = sqlx::query(
             "UPDATE jobs
              SET status = 'succeeded',
                  update_timestamp_ms = $3,
                  lease_expiration_timestamp_ms = NULL,
-                 rows_read = $4,
-                 rows_written = $5,
-                 rows_total = $6
+                 progress = $4
              WHERE destination_uri = $1
                AND status = 'running'
                AND attempt = $2
@@ -547,9 +563,7 @@ impl JobStore for PostgresJobStore {
         .bind(update.destination_uri)
         .bind(i64::from(update.attempt))
         .bind(now_ms)
-        .bind(progress.rows_read)
-        .bind(progress.rows_written)
-        .bind(progress.rows_total)
+        .bind(progress)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -586,16 +600,14 @@ impl JobStore for PostgresJobStore {
         } else {
             JobStatus::Queuing
         };
-        let progress = progress_as_i64(update.progress)?;
+        let progress = PgJobProgress::try_from(update.progress)?;
         let changed = sqlx::query(
             "UPDATE jobs
              SET status = $3,
                  update_timestamp_ms = $4,
                  error_reasons = $5,
                  lease_expiration_timestamp_ms = NULL,
-                 rows_read = $6,
-                 rows_written = $7,
-                 rows_total = $8
+                 progress = $6
              WHERE destination_uri = $1
                AND status = 'running'
                AND attempt = $2
@@ -606,9 +618,7 @@ impl JobStore for PostgresJobStore {
         .bind(PgJobStatus::from(status))
         .bind(now_ms)
         .bind(error_reasons)
-        .bind(progress.rows_read)
-        .bind(progress.rows_written)
-        .bind(progress.rows_total)
+        .bind(progress)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -694,11 +704,10 @@ fn row_to_job(row: &PgRow) -> Result<Job, StoreError> {
         lease_expiration_timestamp_ms: row
             .try_get("lease_expiration_timestamp_ms")
             .map_err(database_error)?,
-        progress: JobProgress {
-            rows_read: i64_to_u64(row.try_get("rows_read").map_err(database_error)?)?,
-            rows_written: i64_to_u64(row.try_get("rows_written").map_err(database_error)?)?,
-            rows_total: i64_to_u64(row.try_get("rows_total").map_err(database_error)?)?,
-        },
+        progress: JobProgress::try_from(
+            row.try_get::<PgJobProgress, _>("progress")
+                .map_err(database_error)?,
+        )?,
     })
 }
 
@@ -750,14 +759,6 @@ fn i64_to_u32(value: i64) -> Result<u32, StoreError> {
 
 fn usize_to_i64(value: usize) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string()))
-}
-
-fn progress_as_i64(progress: JobProgress) -> Result<SqlProgress, StoreError> {
-    Ok(SqlProgress {
-        rows_read: u64_as_i64(progress.rows_read)?,
-        rows_written: u64_as_i64(progress.rows_written)?,
-        rows_total: u64_as_i64(progress.rows_total)?,
-    })
 }
 
 fn u64_as_i64(value: u64) -> Result<i64, StoreError> {
