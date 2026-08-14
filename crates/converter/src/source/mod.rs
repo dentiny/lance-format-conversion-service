@@ -165,17 +165,12 @@ fn schemas_compatible(expected: &Schema, actual: &Schema) -> bool {
     expected == actual
 }
 
-/// Provides a uniform interface for preparing and deleting source datasets.
+/// Provides a uniform interface for preparing source datasets.
 ///
 /// Implementations resolve native locations into directly readable Parquet
-/// files and own source-specific deletion behavior for move jobs.
+/// files.
 #[async_trait]
 pub(crate) trait SourceDataset: Send + Sync {
-    /// Returns whether this source supports copy jobs only.
-    ///
-    /// Sources that return `true` must not have [`Self::delete`] called.
-    fn copy_only(&self) -> bool;
-
     /// Makes the source's Parquet files available to the conversion reader.
     ///
     /// Resolves the source dataset into individual Parquet file locations.
@@ -188,13 +183,6 @@ pub(crate) trait SourceDataset: Send + Sync {
     /// Returns an error if the location is invalid or its Parquet files cannot
     /// be made available.
     async fn prepare(&self) -> Result<PreparedSource, ConversionError>;
-
-    /// Deletes the source after a move conversion commits successfully.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any source file or object cannot be deleted.
-    async fn delete(&self) -> Result<(), ConversionError>;
 }
 
 impl dyn SourceDataset {
@@ -211,10 +199,9 @@ impl dyn SourceDataset {
 /// Opens, prepares, and validates one source for inspection or conversion.
 pub(crate) async fn open_validated_source(
     source_uri: &str,
-) -> Result<(Box<dyn SourceDataset>, PreparedSource), ConversionError> {
+) -> Result<PreparedSource, ConversionError> {
     let location = DatasetLocation::parse_location(source_uri)
         .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
     let source = <dyn SourceDataset>::open(location);
-    let prepared = source.prepare().await?;
-    Ok((source, prepared))
+    source.prepare().await
 }

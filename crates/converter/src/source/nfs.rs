@@ -42,22 +42,6 @@ pub(super) async fn prepare(source_uri: &str) -> Result<PreparedSource, Conversi
     PreparedSource::new(parquet_files).await
 }
 
-pub(super) async fn delete(source_uri: &str) -> Result<(), ConversionError> {
-    let path = Path::new(source_uri);
-    let metadata = tokio::fs::metadata(path)
-        .await
-        .map_err(|error| delete_error(&error))?;
-    if metadata.is_dir() {
-        tokio::fs::remove_dir_all(path)
-            .await
-            .map_err(|error| delete_error(&error))
-    } else {
-        tokio::fs::remove_file(path)
-            .await
-            .map_err(|error| delete_error(&error))
-    }
-}
-
 fn is_parquet(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "parquet")
@@ -65,8 +49,4 @@ fn is_parquet(path: &Path) -> bool {
 
 fn read_error(error: &std::io::Error) -> ConversionError {
     ConversionError::Read(error.to_string())
-}
-
-fn delete_error(error: &std::io::Error) -> ConversionError {
-    ConversionError::Delete(error.to_string())
 }

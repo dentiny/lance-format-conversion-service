@@ -26,7 +26,7 @@
       <section class="page-heading" aria-labelledby="page-title">
         <div>
           <span class="eyebrow">Conversion control plane</span>
-          <h1 id="page-title">Move data into Lance</h1>
+          <h1 id="page-title">Convert data to Lance</h1>
           <p>Inspect a source, configure columns, and track conversion progress.</p>
         </div>
         <span class="service-badge"><span aria-hidden="true">●</span> API connected</span>
@@ -47,21 +47,6 @@
               <label for="creator">Creator</label>
               <input id="creator" name="creator" type="text" autocomplete="name" placeholder="data-platform" required>
             </div>
-
-            <fieldset class="field kind-field">
-              <legend>Operation</legend>
-              <div class="segmented">
-                <label>
-                  <input type="radio" name="kind" value="copy" checked>
-                  <span>Copy</span>
-                </label>
-                <label id="move-option">
-                  <input id="kind-move" type="radio" name="kind" value="move">
-                  <span>Move</span>
-                </label>
-              </div>
-              <small id="move-help" class="field-help" hidden>Move is unavailable for Hugging Face sources.</small>
-            </fieldset>
 
             <div class="field field-wide">
               <label for="source-uri">Source URI</label>

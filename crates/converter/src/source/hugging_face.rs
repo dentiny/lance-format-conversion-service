@@ -28,18 +28,8 @@ impl HuggingFaceDataset {
 
 #[async_trait]
 impl SourceDataset for HuggingFaceDataset {
-    fn copy_only(&self) -> bool {
-        true
-    }
-
     async fn prepare(&self) -> Result<PreparedSource, ConversionError> {
         prepare(self.location.uri()).await
-    }
-
-    async fn delete(&self) -> Result<(), ConversionError> {
-        Err(ConversionError::InvalidSource(
-            "Hugging Face datasets are copy-only".to_owned(),
-        ))
     }
 }
 

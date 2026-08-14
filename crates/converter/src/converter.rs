@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use lance::dataset::{ExternalBlobMode, InsertBuilder, WriteMode, WriteParams};
-use lance_conversion_core::job::{Job, JobKind, JobProgress};
+use lance_conversion_core::job::{Job, JobProgress};
 use lance_file::version::LanceFileVersion;
 
 use crate::{
@@ -31,19 +31,13 @@ impl Converter {
     /// # Errors
     ///
     /// Returns an error when the source cannot be read, its schema is
-    /// unsupported, the Lance commit fails, or a move source cannot be deleted.
+    /// unsupported, or the Lance commit fails.
     pub async fn convert(
         &self,
         job: &Job,
         progress: Arc<ConversionProgress>,
     ) -> Result<JobProgress, ConversionError> {
-        let (source, prepared) = source::open_validated_source(&job.source_uri).await?;
-        if job.kind == JobKind::Move && source.copy_only() {
-            return Err(ConversionError::InvalidSource(
-                "Hugging Face datasets are copy-only".to_owned(),
-            ));
-        }
-
+        let prepared = source::open_validated_source(&job.source_uri).await?;
         let stream = prepared.into_stream();
 
         let stream = blob::apply_blob_columns(
@@ -82,9 +76,6 @@ impl Converter {
         validation::validate_row_count(&destination, source_rows).await?;
         indexes::create(&mut destination, &job.indices).await?;
         progress.finish();
-        if job.kind == JobKind::Move {
-            source.delete().await?;
-        }
         Ok(progress.snapshot())
     }
 }

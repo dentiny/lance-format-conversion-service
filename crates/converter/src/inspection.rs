@@ -26,7 +26,7 @@ pub struct SourceColumn {
 pub async fn inspect_source_schema(
     source_uri: &str,
 ) -> Result<SourceSchemaInspection, ConversionError> {
-    let (_, prepared) = source::open_validated_source(source_uri).await?;
+    let prepared = source::open_validated_source(source_uri).await?;
     let fields = prepared.schema().fields();
 
     let columns = fields

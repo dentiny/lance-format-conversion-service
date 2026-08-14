@@ -46,7 +46,7 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - Write Lance datasets to NFS-mounted paths or AWS S3.
 - Stream Hugging Face Parquet files directly over HTTP without staging them on
   local disk.
-- Run either a `copy` job or a `move` job. Hugging Face sources are copy-only.
+- Source datasets are read-only and are never deleted by this service.
 
 ### Schema, blobs, and indexes
 
@@ -54,7 +54,7 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - Select URL columns for Blob V2 ingestion. Lance fetches the referenced bytes
   and stores each value inline, packed, or in a dedicated blob file according
   to the configured thresholds.
-- Create scalar, full-text, spatial, and vector Lance indexes after ingestion.
+- Create scalar, full-text, and vector Lance indexes after ingestion.
 - Validate unsupported Arrow types and selected blob columns before writing.
 - Verify the destination row count before marking a job as successful.
 
@@ -80,7 +80,7 @@ files into a versioned dataset designed for multimodal and AI workloads:
 
 - `crates/core`: job models and dataset location classification
 - `crates/converter`: Parquet and Hugging Face readers, schema inspection,
-  validation, Lance writes, progress accounting, and move-source deletion
+  validation, Lance writes, and progress accounting
 - `crates/job-store`: object-safe `JobStore` interface and storage errors
 - `crates/job-store-factory`: database URL dispatch and backend construction
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
@@ -206,7 +206,6 @@ curl -X POST http://127.0.0.1:8080/v1/jobs \
   -d '{
     "creator":"test-user",
     "source_uri":"s3://source-bucket/datasets/images",
-    "kind":"copy",
     "destination_uri":"s3://destination-bucket/datasets/images.lance",
     "blob_columns":[{"column":"image_url"}],
     "indices":[{"columns":["label"],"index_type":"scalar"}]

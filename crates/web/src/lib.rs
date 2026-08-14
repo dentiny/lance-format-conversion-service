@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use lance_conversion_core::{
-    job::{BlobColumnSpec, IndexSpec, Job, JobKind, NewJob},
+    job::{BlobColumnSpec, IndexSpec, Job, NewJob},
     location::DatasetLocation,
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
@@ -96,7 +96,6 @@ async fn inspect_source(
 struct CreateJobRequest {
     creator: String,
     source_uri: String,
-    kind: JobKind,
     destination_uri: String,
     #[serde(default)]
     blob_columns: Vec<BlobColumnSpec>,
@@ -117,7 +116,6 @@ async fn create_job(
         .create_job(NewJob {
             creator: request.creator,
             source,
-            kind: request.kind,
             destination,
             blob_columns: request.blob_columns,
             indices: request.indices,
@@ -307,7 +305,7 @@ mod tests {
                     .uri("/v1/jobs")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"creator":"test-user","source_uri":"s3://source-bucket/data","kind":"copy","destination_uri":"s3://destination-bucket/data.lance"}"#,
+                        r#"{"creator":"test-user","source_uri":"s3://source-bucket/data","destination_uri":"s3://destination-bucket/data.lance"}"#,
                     ))
                     .unwrap(),
             )
@@ -332,7 +330,7 @@ mod tests {
                         .uri("/v1/jobs")
                         .header("content-type", "application/json")
                         .body(Body::from(format!(
-                            r#"{{"creator":"{creator}","source_uri":"s3://source-bucket/data","kind":"copy","destination_uri":"{destination}"}}"#
+                            r#"{{"creator":"{creator}","source_uri":"s3://source-bucket/data","destination_uri":"{destination}"}}"#
                         )))
                         .unwrap(),
                 )
@@ -376,7 +374,6 @@ mod tests {
                         r#"{
                             "creator":"test-user",
                             "source_uri":"s3://source-bucket/data",
-                            "kind":"copy",
                             "destination_uri":"s3://destination-bucket/specs.lance",
                             "blob_columns":[{"column":"image"}],
                             "indices":[{

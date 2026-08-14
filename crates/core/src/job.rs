@@ -35,11 +35,6 @@ macro_rules! string_enum {
     };
 }
 
-string_enum!(JobKind {
-    Copy => "copy",
-    Move => "move",
-});
-
 string_enum!(JobStatus {
     Queuing => "queuing",
     Running => "running",
@@ -67,7 +62,6 @@ pub struct IndexSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
     pub creator: String,
-    pub kind: JobKind,
     pub source_uri: String,
     pub destination_uri: String,
     pub blob_columns: Vec<BlobColumnSpec>,
@@ -92,7 +86,6 @@ pub struct JobError {
 pub struct NewJob {
     pub creator: String,
     pub source: DatasetLocation,
-    pub kind: JobKind,
     pub destination: DatasetLocation,
     pub blob_columns: Vec<BlobColumnSpec>,
     pub indices: Vec<IndexSpec>,

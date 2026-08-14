@@ -22,6 +22,4 @@ pub enum ConversionError {
     Index(String),
     #[error("conversion validation failed: {0}")]
     Validation(String),
-    #[error("move source deletion failed after conversion: {0}")]
-    Delete(String),
 }

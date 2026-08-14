@@ -188,7 +188,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("source");
         tokio::fs::create_dir(&source).await.unwrap();
-        write_parquet(&source).await;
+        write_test_source(&source).await;
         let destination = temp_dir.path().join("destination.lance");
         create_job(
             &store,
@@ -317,7 +317,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("source");
         tokio::fs::create_dir(&source).await.unwrap();
-        write_parquet(&source).await;
+        write_test_source(&source).await;
         let destination = temp_dir.path().join("destination.lance");
         create_job(&store, &source, &destination, Vec::new()).await;
 
@@ -380,7 +380,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn write_parquet(directory: &std::path::Path) {
+    async fn write_test_source(directory: &std::path::Path) {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "value",
             DataType::Int64,

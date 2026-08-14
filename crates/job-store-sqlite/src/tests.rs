@@ -4,8 +4,8 @@ use std::sync::{
 };
 
 use lance_conversion_core::job::{
-    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobKind, JobProgress,
-    JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
+    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobProgress, JobStatus,
+    LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 use lance_test_support::new_job;
@@ -195,14 +195,13 @@ async fn updating_progress_keeps_job_running() {
     let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
         .await
         .unwrap();
-    let mut job = new_job(
+    let job = new_job(
         "test-user",
         "/datasets/source",
         "s3://destination-bucket/data.lance",
         3,
     )
     .unwrap();
-    job.kind = JobKind::Move;
     store.create_job(job).await.unwrap();
     let claim = store.claim_jobs(1, 1_000).await.unwrap().remove(0);
     let destination_uri = claim.destination_uri.clone();

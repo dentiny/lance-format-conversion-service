@@ -2,7 +2,7 @@ use std::{error::Error, path::Path};
 
 use arrow::array::RecordBatch;
 use lance_conversion_core::{
-    job::{Job, JobKind, JobProgress, JobStatus, NewJob},
+    job::{Job, JobProgress, JobStatus, NewJob},
     location::{DatasetLocation, LocationError},
 };
 use parquet::arrow::ArrowWriter;
@@ -26,7 +26,6 @@ pub async fn write_parquet(path: impl AsRef<Path>, batch: &RecordBatch) -> Fixtu
 pub fn running_job(source: &Path, destination: &Path) -> Job {
     Job {
         creator: "test-user".to_owned(),
-        kind: JobKind::Copy,
         source_uri: source.to_string_lossy().into_owned(),
         destination_uri: destination.to_string_lossy().into_owned(),
         blob_columns: Vec::new(),
@@ -55,7 +54,6 @@ pub fn new_job(
     Ok(NewJob {
         creator: creator.into(),
         source: DatasetLocation::parse_location(source_uri)?,
-        kind: JobKind::Copy,
         destination: DatasetLocation::parse_location(destination_uri)?,
         blob_columns: Vec::new(),
         indices: Vec::new(),

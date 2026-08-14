@@ -2,9 +2,9 @@
 
 const INDEX_TYPES = [
   ["none", "None"],
-  ["scalar", "Scalar"],
-  ["text", "Text"],
-  ["vector", "Vector"],
+  ["scalar", "Scalar — B-tree for exact and range filters"],
+  ["text", "Text — inverted index for full-text search"],
+  ["vector", "Vector — IVF-PQ for similarity search"],
 ];
 
 const state = {
@@ -24,8 +24,6 @@ function cacheElements() {
   elements.creator = document.querySelector("#creator");
   elements.source = document.querySelector("#source-uri");
   elements.destination = document.querySelector("#destination-uri");
-  elements.move = document.querySelector("#kind-move");
-  elements.moveHelp = document.querySelector("#move-help");
   elements.inspectButton = document.querySelector("#inspect-button");
   elements.submitButton = document.querySelector("#submit-button");
   elements.schemaSection = document.querySelector("#schema-section");
@@ -77,14 +75,8 @@ async function responseError(response) {
   }
 }
 
-// Updates the copy/move controls when the source URI changes.
-function updateMoveAvailability() {
-  const isHuggingFace = elements.source.value.trim().toLowerCase().startsWith("hf://");
-  elements.move.disabled = isHuggingFace;
-  elements.moveHelp.hidden = !isHuggingFace;
-  if (isHuggingFace && elements.move.checked) {
-    document.querySelector('input[name="kind"][value="copy"]').checked = true;
-  }
+// Invalidates schema-derived controls when the source URI changes.
+function updateSourceInspection() {
   if (state.inspectedSource && state.inspectedSource !== elements.source.value.trim()) {
     state.inspectedSource = "";
     state.fields = [];
@@ -292,12 +284,10 @@ async function submitJob(event) {
     return;
   }
 
-  const selectedKind = document.querySelector('input[name="kind"]:checked');
   const payload = {
     creator: elements.creator.value.trim(),
     source_uri: elements.source.value.trim(),
     destination_uri: elements.destination.value.trim(),
-    kind: selectedKind.value,
     blob_columns: collectBlobColumns(),
     indices: collectIndices(),
   };
@@ -416,7 +406,7 @@ function createRouteCell(job) {
   source.title = job.source_uri || "";
   const destination = makeElement("span", "uri", job.destination_uri || "—");
   destination.title = job.destination_uri || "";
-  cell.append(source, makeElement("span", "route-arrow", `↓ ${String(job.kind || "copy").toUpperCase()}`), destination);
+  cell.append(source, makeElement("span", "route-arrow", "↓ COPY"), destination);
   return cell;
 }
 
@@ -739,10 +729,10 @@ function clearJobFilters() {
 function initialize() {
   cacheElements();
   if (elements.form) {
-    elements.source.addEventListener("input", updateMoveAvailability);
+    elements.source.addEventListener("input", updateSourceInspection);
     elements.inspectButton.addEventListener("click", inspectSchema);
     elements.form.addEventListener("submit", submitJob);
-    updateMoveAvailability();
+    updateSourceInspection();
   }
   if (elements.jobsBody) {
     restoreJobFilters();
