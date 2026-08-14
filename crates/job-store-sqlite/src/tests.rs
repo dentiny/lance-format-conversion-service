@@ -141,11 +141,11 @@ async fn blob_and_index_specs_round_trip_through_store() {
     }];
     let indices = vec![
         IndexSpec {
-            columns: vec!["category".to_owned()],
+            column: "category".to_owned(),
             index_type: IndexType::Scalar,
         },
         IndexSpec {
-            columns: vec!["description".to_owned()],
+            column: "description".to_owned(),
             index_type: IndexType::Text,
         },
     ];

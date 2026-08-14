@@ -1,3 +1,24 @@
+DO $migration$
+BEGIN
+    CREATE TYPE blob_column_spec AS (
+        "column" TEXT
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END
+$migration$;
+
+DO $migration$
+BEGIN
+    CREATE TYPE index_spec AS (
+        "column" TEXT,
+        index_type TEXT
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END
+$migration$;
+
 CREATE TABLE IF NOT EXISTS jobs (
     -- Job identity and conversion request.
     creator TEXT NOT NULL,
@@ -5,12 +26,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     destination_uri TEXT PRIMARY KEY,
 
     -- User-selected conversion options.
-    blob_columns_json JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (
-        jsonb_typeof(blob_columns_json) = 'array'
-    ),
-    indices_json JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (
-        jsonb_typeof(indices_json) = 'array'
-    ),
+    blob_columns blob_column_spec[] NOT NULL DEFAULT ARRAY[]::blob_column_spec[],
+    indices index_spec[] NOT NULL DEFAULT ARRAY[]::index_spec[],
 
     -- Job lifecycle.
     status TEXT NOT NULL CHECK (
@@ -49,12 +66,12 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 -- Query pattern: claim the oldest queuing jobs in creation order.
 CREATE INDEX IF NOT EXISTS jobs_queuing_idx
-    ON jobs(creation_timestamp_ms, destination_uri)
+    ON jobs(creation_timestamp_ms)
     WHERE status = 'queuing';
 
 -- Query pattern: reclaim running jobs whose lease has expired.
 CREATE INDEX IF NOT EXISTS jobs_expired_running_idx
-    ON jobs(lease_expiration_timestamp_ms, creation_timestamp_ms, destination_uri)
+    ON jobs(lease_expiration_timestamp_ms)
     WHERE status = 'running';
 
 -- Query pattern: filter jobs by creator.
@@ -63,9 +80,9 @@ CREATE INDEX IF NOT EXISTS jobs_creator_idx
 
 -- Query pattern: list all jobs from newest to oldest.
 CREATE INDEX IF NOT EXISTS jobs_creation_idx
-    ON jobs(creation_timestamp_ms DESC, destination_uri DESC);
+    ON jobs(creation_timestamp_ms);
 
--- Query pattern: list one creator's failed jobs from newest to oldest.
-CREATE INDEX IF NOT EXISTS jobs_creator_failed_idx
-    ON jobs(creator, creation_timestamp_ms DESC, destination_uri DESC)
+-- Query pattern: list failed jobs from newest to oldest.
+CREATE INDEX IF NOT EXISTS jobs_failed_idx
+    ON jobs(creation_timestamp_ms)
     WHERE status = 'failed';

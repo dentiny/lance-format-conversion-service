@@ -17,22 +17,22 @@ pub(crate) async fn create(
     specs: &[IndexSpec],
 ) -> Result<(), ConversionError> {
     for (position, spec) in specs.iter().enumerate() {
-        let column = spec.columns.first().ok_or_else(|| {
-            ConversionError::InvalidIndexSpec(format!(
-                "{} index must specify at least one column",
+        let column = spec.column.as_str();
+        if column.is_empty() {
+            return Err(ConversionError::InvalidIndexSpec(format!(
+                "{} index must specify a column",
                 spec.index_type
-            ))
-        })?;
+            )));
+        }
         let field = dataset.schema().field(column).ok_or_else(|| {
             ConversionError::InvalidIndexSpec(format!(
                 "selected index column '{column}' does not exist"
             ))
         })?;
         let (index_type, params) = mapping(spec.index_type, &field.data_type())?;
-        let columns = spec.columns.iter().map(String::as_str).collect::<Vec<_>>();
         dataset
             .create_index(
-                &columns,
+                &[column],
                 index_type,
                 Some(format!("conversion_{position}_{}_idx", spec.index_type)),
                 params.as_ref(),

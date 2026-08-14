@@ -1,6 +1,6 @@
 use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicI64, AtomicU64, Ordering},
+    Arc,
+    atomic::{AtomicI64, Ordering},
 };
 
 use lance_conversion_core::job::{
@@ -9,10 +9,10 @@ use lance_conversion_core::job::{
 };
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 use lance_test_support::new_job;
-use pglite_oxide::PgliteServer;
 use serial_test::serial;
 
 use super::store::{Clock, PostgresJobStore};
+use super::test_utils;
 
 struct TestClock(AtomicI64);
 
@@ -32,23 +32,12 @@ impl Clock for TestClock {
     }
 }
 
-fn pglite_url() -> String {
-    static SERVER: OnceLock<PgliteServer> = OnceLock::new();
-    SERVER
-        .get_or_init(|| PgliteServer::temporary_tcp().expect("failed to start pglite-oxide"))
-        .database_url()
-}
-
 async fn open_store() -> PostgresJobStore {
     open_store_with_clock(Arc::new(TestClock::new(0))).await
 }
 
 async fn open_store_with_clock(clock: Arc<dyn Clock>) -> PostgresJobStore {
-    static SCHEMA: AtomicU64 = AtomicU64::new(1);
-    let schema = format!("job_store_{}", SCHEMA.fetch_add(1, Ordering::Relaxed));
-    PostgresJobStore::open_with_clock(&pglite_url(), clock, &schema)
-        .await
-        .unwrap()
+    test_utils::open_isolated_with_clock(clock).await
 }
 
 #[tokio::test]
@@ -163,11 +152,11 @@ async fn blob_and_index_specs_round_trip_through_store() {
     }];
     let indices = vec![
         IndexSpec {
-            columns: vec!["category".to_owned()],
+            column: "category".to_owned(),
             index_type: IndexType::Scalar,
         },
         IndexSpec {
-            columns: vec!["description".to_owned()],
+            column: "description".to_owned(),
             index_type: IndexType::Text,
         },
     ];

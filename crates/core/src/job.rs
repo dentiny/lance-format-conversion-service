@@ -55,7 +55,7 @@ pub struct BlobColumnSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexSpec {
-    pub columns: Vec<String>,
+    pub column: String,
     pub index_type: IndexType,
 }
 

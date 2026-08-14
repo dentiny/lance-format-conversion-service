@@ -17,22 +17,18 @@ use lance_conversion_core::job::{
 use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
-const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
-const INDICES_JSON_COLUMN: &str = "indices_json";
 const DEFAULT_MAX_CONNECTIONS: u32 = 8;
 const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
     error_reasons_json::text AS error_reasons_json,
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
-    blob_columns_json::text AS blob_columns_json,
-    indices_json::text AS indices_json
+    blob_columns, indices
     FROM jobs";
 const LOAD_JOB_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
     error_reasons_json::text AS error_reasons_json,
     lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
-    blob_columns_json::text AS blob_columns_json,
-    indices_json::text AS indices_json
+    blob_columns, indices
     FROM jobs
     WHERE destination_uri = $1";
 
@@ -41,6 +37,55 @@ struct SqlProgress {
     rows_read: i64,
     rows_written: i64,
     rows_total: i64,
+}
+
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "blob_column_spec")]
+struct PgBlobColumnSpec {
+    column: String,
+}
+
+impl From<BlobColumnSpec> for PgBlobColumnSpec {
+    fn from(spec: BlobColumnSpec) -> Self {
+        Self {
+            column: spec.column,
+        }
+    }
+}
+
+impl From<PgBlobColumnSpec> for BlobColumnSpec {
+    fn from(spec: PgBlobColumnSpec) -> Self {
+        Self {
+            column: spec.column,
+        }
+    }
+}
+
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "index_spec")]
+struct PgIndexSpec {
+    column: String,
+    index_type: String,
+}
+
+impl From<IndexSpec> for PgIndexSpec {
+    fn from(spec: IndexSpec) -> Self {
+        Self {
+            column: spec.column,
+            index_type: spec.index_type.to_string(),
+        }
+    }
+}
+
+impl TryFrom<PgIndexSpec> for IndexSpec {
+    type Error = StoreError;
+
+    fn try_from(spec: PgIndexSpec) -> Result<Self, Self::Error> {
+        Ok(Self {
+            column: spec.column,
+            index_type: parse_value(&spec.index_type)?,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -66,8 +111,8 @@ impl PostgresJobStore {
         .await
     }
 
-    #[cfg(test)]
-    pub(super) async fn open_with_clock(
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) async fn open_with_clock(
         database_url: &str,
         clock: Arc<dyn Clock>,
         schema: &str,
@@ -125,11 +170,11 @@ impl PostgresJobStore {
     }
 }
 
-pub(super) trait Clock: Send + Sync {
+pub(crate) trait Clock: Send + Sync {
     fn now_ms(&self) -> Result<i64, StoreError>;
 }
 
-struct SystemClock;
+pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
     fn now_ms(&self) -> Result<i64, StoreError> {
@@ -144,21 +189,29 @@ impl Clock for SystemClock {
 #[async_trait]
 impl JobStore for PostgresJobStore {
     async fn create_job(&self, job: NewJob) -> Result<(), StoreError> {
-        let blob_columns_json = serialize_json(&job.blob_columns)?;
-        let indices_json = serialize_json(&job.indices)?;
+        let blob_columns = job
+            .blob_columns
+            .into_iter()
+            .map(PgBlobColumnSpec::from)
+            .collect::<Vec<_>>();
+        let indices = job
+            .indices
+            .into_iter()
+            .map(PgIndexSpec::from)
+            .collect::<Vec<_>>();
         let mut transaction = self.begin().await?;
         sqlx::query(
             "INSERT INTO jobs(
                 creator, source_uri, destination_uri, status,
-                creation_timestamp_ms, update_timestamp_ms, blob_columns_json, indices_json
-             ) VALUES ($1, $2, $3, 'queuing', $4, $4, $5::jsonb, $6::jsonb)",
+                creation_timestamp_ms, update_timestamp_ms, blob_columns, indices
+             ) VALUES ($1, $2, $3, 'queuing', $4, $4, $5, $6)",
         )
         .bind(job.creator)
         .bind(job.source.uri())
         .bind(job.destination.uri())
         .bind(job.creation_timestamp_ms)
-        .bind(blob_columns_json)
-        .bind(indices_json)
+        .bind(blob_columns)
+        .bind(indices)
         .execute(&mut *transaction)
         .await
         .map_err(job_insert_error)?;
@@ -549,19 +602,26 @@ fn row_to_job(row: &PgRow) -> Result<Job, StoreError> {
     let error_reasons_json = row
         .try_get::<String, _>("error_reasons_json")
         .map_err(database_error)?;
-    let error_reasons = deserialize_json::<Vec<JobError>>(&error_reasons_json)?;
-    let blob_columns_json = row
-        .try_get::<String, _>(BLOB_COLUMNS_JSON_COLUMN)
-        .map_err(database_error)?;
-    let indices_json = row
-        .try_get::<String, _>(INDICES_JSON_COLUMN)
-        .map_err(database_error)?;
+    let error_reasons = serde_json::from_str(&error_reasons_json)
+        .map_err(|error| StoreError::Database(error.to_string()))?;
+    let blob_columns = row
+        .try_get::<Vec<PgBlobColumnSpec>, _>("blob_columns")
+        .map_err(database_error)?
+        .into_iter()
+        .map(BlobColumnSpec::from)
+        .collect();
+    let indices = row
+        .try_get::<Vec<PgIndexSpec>, _>("indices")
+        .map_err(database_error)?
+        .into_iter()
+        .map(IndexSpec::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Job {
         creator: row.try_get("creator").map_err(database_error)?,
         source_uri: row.try_get("source_uri").map_err(database_error)?,
         destination_uri: row.try_get("destination_uri").map_err(database_error)?,
-        blob_columns: deserialize_json::<Vec<BlobColumnSpec>>(&blob_columns_json)?,
-        indices: deserialize_json::<Vec<IndexSpec>>(&indices_json)?,
+        blob_columns,
+        indices,
         status: parse_value(&row.try_get::<String, _>("status").map_err(database_error)?)?,
         creation_timestamp_ms: row
             .try_get("creation_timestamp_ms")
@@ -616,14 +676,6 @@ where
     T::Err: std::fmt::Display,
 {
     T::from_str(value).map_err(|error| StoreError::Database(error.to_string()))
-}
-
-fn serialize_json<T: serde::Serialize>(value: &T) -> Result<String, StoreError> {
-    serde_json::to_string(value).map_err(|error| StoreError::Worker(error.to_string()))
-}
-
-fn deserialize_json<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, StoreError> {
-    serde_json::from_str(value).map_err(|error| StoreError::Database(error.to_string()))
 }
 
 fn i64_to_u64(value: i64) -> Result<u64, StoreError> {

@@ -26,6 +26,8 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 
 [dev-dependencies]
+lance-job-store-postgres = { workspace = true, features = ["test-utils"] }
 lance-job-store-sqlite.workspace = true
 serde_json.workspace = true
+serial_test = "3"
 tower.workspace = true
