@@ -18,8 +18,3 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["sqlite", "macros", "migrate"] }
 tokio = { workspace = true, features = ["fs", "rt"] }
-
-[dev-dependencies]
-lance-test-support.workspace = true
-tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

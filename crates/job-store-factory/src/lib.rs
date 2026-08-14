@@ -56,3 +56,6 @@ pub enum StoreFactoryError {
     #[error(transparent)]
     Store(#[from] StoreError),
 }
+
+#[cfg(test)]
+mod tests;

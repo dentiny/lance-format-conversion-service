@@ -60,6 +60,11 @@ CREATE INDEX jobs_running_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'running';
 
+-- Query pattern: list failed jobs from newest to oldest.
+CREATE INDEX jobs_failed_index
+    ON jobs(creation_timestamp_ms)
+    WHERE status = 'failed';
+
 -- Query pattern: filter jobs by creator.
 CREATE INDEX jobs_creator_index
     ON jobs(creator);
@@ -71,8 +76,3 @@ CREATE INDEX jobs_creation_index
 -- Query pattern: list jobs from newest to oldest by last update.
 CREATE INDEX jobs_update_index
     ON jobs(update_timestamp_ms);
-
--- Query pattern: list failed jobs from newest to oldest.
-CREATE INDEX jobs_failed_index
-    ON jobs(creation_timestamp_ms)
-    WHERE status = 'failed';

@@ -58,15 +58,6 @@ impl PostgresJobStore {
     async fn begin(&self) -> Result<Transaction<'static, Postgres>, StoreError> {
         self.pool.begin().await.map_err(database_error)
     }
-
-    #[cfg(test)]
-    pub(super) async fn get_job(
-        &self,
-        destination_uri: &str,
-    ) -> Result<lance_conversion_core::job::Job, StoreError> {
-        let mut connection = self.pool.acquire().await.map_err(database_error)?;
-        row::load_job(&mut connection, destination_uri).await
-    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]

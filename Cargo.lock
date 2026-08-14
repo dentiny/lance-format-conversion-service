@@ -4263,10 +4263,14 @@ dependencies = [
 name = "lance-job-store-factory"
 version = "0.1.0"
 dependencies = [
+ "lance-conversion-core",
  "lance-job-store",
  "lance-job-store-postgres",
  "lance-job-store-sqlite",
+ "lance-test-support",
+ "serial_test",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4276,11 +4280,8 @@ dependencies = [
  "async-trait",
  "lance-conversion-core",
  "lance-job-store",
- "lance-test-support",
  "pglite-oxide",
- "serial_test",
  "sqlx",
- "tokio",
 ]
 
 [[package]]
@@ -4290,11 +4291,9 @@ dependencies = [
  "async-trait",
  "lance-conversion-core",
  "lance-job-store",
- "lance-test-support",
  "serde",
  "serde_json",
  "sqlx",
- "tempfile",
  "tokio",
 ]
 

@@ -20,3 +20,11 @@ lance-job-store.workspace = true
 lance-job-store-postgres = { workspace = true, optional = true }
 lance-job-store-sqlite = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[dev-dependencies]
+lance-conversion-core.workspace = true
+lance-job-store-postgres = { workspace = true, features = ["test-utils"] }
+lance-job-store-sqlite.workspace = true
+lance-test-support.workspace = true
+serial_test = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

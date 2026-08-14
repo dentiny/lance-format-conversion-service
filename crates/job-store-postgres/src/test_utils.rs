@@ -7,12 +7,20 @@ use lance_job_store::{Clock, SystemClock};
 use super::store::PostgresJobStore;
 
 /// Opens an isolated PGlite-backed job store for tests.
+///
+/// # Panics
+///
+/// Panics if `PGlite` cannot start or the store cannot be opened.
 pub async fn open_isolated() -> PostgresJobStore {
     open_isolated_with_clock(Arc::new(SystemClock)).await
 }
 
 /// Opens an isolated PGlite-backed job store with a caller-supplied clock.
-pub(crate) async fn open_isolated_with_clock(clock: Arc<dyn Clock>) -> PostgresJobStore {
+///
+/// # Panics
+///
+/// Panics if `PGlite` cannot start or the store cannot be opened.
+pub async fn open_isolated_with_clock(clock: Arc<dyn Clock>) -> PostgresJobStore {
     PostgresJobStore::open_with_clock(&pglite_url(), clock)
         .await
         .expect("failed to open isolated postgres job store")

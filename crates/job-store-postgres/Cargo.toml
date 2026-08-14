@@ -23,9 +23,6 @@ sqlx = { workspace = true, features = ["postgres", "derive"] }
 pglite-oxide = { version = "0.5", optional = true, default-features = false, features = ["bundled"] }
 
 [dev-dependencies]
-lance-test-support.workspace = true
 # Bundled PGlite 17.5. Keep Cargo.lock's virtual-net at 0.702.0-alpha.3;
 # wasmer-wasix 0.702.0-alpha.3 does not compile against virtual-net 0.702.1.
 pglite-oxide = { version = "0.5", default-features = false, features = ["bundled"] }
-serial_test = "3"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

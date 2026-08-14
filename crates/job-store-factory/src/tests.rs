@@ -4,13 +4,17 @@ use std::sync::{
 };
 
 use lance_conversion_core::job::{
-    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, JobProgress, JobStatus,
-    LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
+    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, IndexType, Job, JobProgress,
+    JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, ProgressUpdate,
 };
 use lance_job_store::{Clock, JobOrderField, JobQuery, JobStore, StoreError};
+use lance_job_store_postgres::test_utils::{open_isolated, open_isolated_with_clock};
+use lance_job_store_sqlite::SqliteJobStore;
 use lance_test_support::new_job;
+use serial_test::serial;
 
-use super::store::SqliteJobStore;
+const JOB_LOOKUP_LIMIT: usize = 100;
+const BACKENDS: [&str; 2] = ["sqlite", "postgres"];
 
 struct TestClock(AtomicI64);
 
@@ -30,9 +34,47 @@ impl Clock for TestClock {
     }
 }
 
+async fn test_stores() -> [(&'static str, Arc<dyn JobStore>); 2] {
+    [
+        (
+            "sqlite",
+            Arc::new(SqliteJobStore::open(":memory:").await.unwrap()),
+        ),
+        ("postgres", Arc::new(open_isolated().await)),
+    ]
+}
+
+async fn store_with_clock(backend: &str, clock: Arc<dyn Clock>) -> Arc<dyn JobStore> {
+    match backend {
+        "sqlite" => Arc::new(
+            SqliteJobStore::open_with_clock(":memory:", clock)
+                .await
+                .unwrap(),
+        ),
+        "postgres" => Arc::new(open_isolated_with_clock(clock).await),
+        _ => unreachable!("unknown job-store backend {backend}"),
+    }
+}
+
+async fn job(store: &dyn JobStore, destination_uri: &str) -> Job {
+    store
+        .list_jobs(JOB_LOOKUP_LIMIT)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|job| job.destination_uri == destination_uri)
+        .unwrap_or_else(|| panic!("missing job {destination_uri}"))
+}
+
 #[tokio::test]
+#[serial]
 async fn created_job_can_be_listed() {
-    let store = SqliteJobStore::open(":memory:").await.unwrap();
+    for (backend, store) in test_stores().await {
+        created_job_can_be_listed_impl(backend, store).await;
+    }
+}
+
+async fn created_job_can_be_listed_impl(backend: &str, store: Arc<dyn JobStore>) {
     let destination_uri = "s3://destination-bucket/data.lance";
     store
         .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
@@ -40,28 +82,33 @@ async fn created_job_can_be_listed() {
         .unwrap();
 
     let jobs = store.list_jobs(10).await.unwrap();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].destination_uri, destination_uri);
-    assert_eq!(jobs[0].status, JobStatus::Queuing);
+    assert_eq!(jobs.len(), 1, "{backend}");
+    assert_eq!(jobs[0].destination_uri, destination_uri, "{backend}");
+    assert_eq!(jobs[0].status, JobStatus::Queuing, "{backend}");
     assert_eq!(
-        store
-            .get_job(destination_uri)
-            .await
-            .unwrap()
-            .destination_uri,
-        destination_uri
+        job(store.as_ref(), destination_uri).await.destination_uri,
+        destination_uri,
+        "{backend}"
     );
 }
 
 #[tokio::test]
+#[serial]
 async fn jobs_can_be_filtered_by_creator_and_creation_timestamp() {
+    for backend in BACKENDS {
+        let store = store_with_clock(backend, Arc::new(TestClock::new(100))).await;
+        jobs_can_be_filtered_by_creator_and_creation_timestamp_impl(backend, store).await;
+    }
+}
+
+async fn jobs_can_be_filtered_by_creator_and_creation_timestamp_impl(
+    backend: &str,
+    store: Arc<dyn JobStore>,
+) {
     const QUERY_LIMIT: usize = 10;
     const LOWER_BOUND_MS: i64 = 15;
     const UPPER_BOUND_MS: i64 = 35;
 
-    let store = SqliteJobStore::open_with_clock(":memory:", Arc::new(TestClock::new(100)))
-        .await
-        .unwrap();
     for (creator, timestamp, destination) in [
         ("alice", 10, "/destinations/alice-old.lance"),
         ("bob", 20, "/destinations/bob.lance"),
@@ -87,9 +134,9 @@ async fn jobs_can_be_filtered_by_creator_and_creation_timestamp() {
         .await
         .unwrap();
 
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].creator, "alice");
-    assert_eq!(jobs[0].creation_timestamp_ms, 30);
+    assert_eq!(jobs.len(), 1, "{backend}");
+    assert_eq!(jobs[0].creator, "alice", "{backend}");
+    assert_eq!(jobs[0].creation_timestamp_ms, 30, "{backend}");
 
     let oldest_first = store
         .query_jobs(JobQuery {
@@ -109,7 +156,8 @@ async fn jobs_can_be_filtered_by_creator_and_creation_timestamp() {
             .iter()
             .map(|job| job.creation_timestamp_ms)
             .collect::<Vec<_>>(),
-        [10, 20, 30]
+        [10, 20, 30],
+        "{backend}"
     );
 
     store.claim_jobs(1, 100).await.unwrap();
@@ -127,14 +175,23 @@ async fn jobs_can_be_filtered_by_creator_and_creation_timestamp() {
         .await
         .unwrap();
     assert_eq!(
-        recently_updated[0].destination_uri,
-        "/destinations/alice-old.lance"
+        recently_updated[0].destination_uri, "/destinations/alice-old.lance",
+        "{backend}"
     );
 }
 
 #[tokio::test]
+#[serial]
 async fn blob_and_index_specs_round_trip_through_store() {
-    let store = SqliteJobStore::open(":memory:").await.unwrap();
+    for (backend, store) in test_stores().await {
+        blob_and_index_specs_round_trip_through_store_impl(backend, store).await;
+    }
+}
+
+async fn blob_and_index_specs_round_trip_through_store_impl(
+    backend: &str,
+    store: Arc<dyn JobStore>,
+) {
     let destination_uri = "s3://destination-bucket/specs.lance";
     let blob_columns = vec![BlobColumnSpec {
         column: "image".to_owned(),
@@ -149,23 +206,27 @@ async fn blob_and_index_specs_round_trip_through_store() {
             index_type: IndexType::Text,
         },
     ];
-    let mut job = new_job("test-user", "/datasets/source", destination_uri, 3).unwrap();
-    job.blob_columns.clone_from(&blob_columns);
-    job.indices.clone_from(&indices);
+    let mut created = new_job("test-user", "/datasets/source", destination_uri, 3).unwrap();
+    created.blob_columns.clone_from(&blob_columns);
+    created.indices.clone_from(&indices);
 
-    store.create_job(job).await.unwrap();
+    store.create_job(created).await.unwrap();
 
-    let job = store.get_job(destination_uri).await.unwrap();
-    assert_eq!(job.blob_columns, blob_columns);
-    assert_eq!(job.indices, indices);
+    let stored = job(store.as_ref(), destination_uri).await;
+    assert_eq!(stored.blob_columns, blob_columns, "{backend}");
+    assert_eq!(stored.indices, indices, "{backend}");
 }
 
 #[tokio::test]
+#[serial]
 async fn claiming_a_job_sets_its_status_to_running() {
-    let clock = Arc::new(TestClock::new(10));
-    let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
-        .await
-        .unwrap();
+    for backend in BACKENDS {
+        let store = store_with_clock(backend, Arc::new(TestClock::new(10))).await;
+        claiming_a_job_sets_its_status_to_running_impl(backend, store).await;
+    }
+}
+
+async fn claiming_a_job_sets_its_status_to_running_impl(backend: &str, store: Arc<dyn JobStore>) {
     store
         .create_job(
             new_job(
@@ -180,29 +241,39 @@ async fn claiming_a_job_sets_its_status_to_running() {
         .unwrap();
 
     let first_claim = store.claim_jobs(1, 100).await.unwrap();
-    assert_eq!(first_claim.len(), 1);
+    assert_eq!(first_claim.len(), 1, "{backend}");
     let destination_uri = first_claim[0].destination_uri.clone();
-    assert_eq!(first_claim[0].attempt, 1);
+    assert_eq!(first_claim[0].attempt, 1, "{backend}");
     assert_eq!(
-        store.get_job(&destination_uri).await.unwrap().status,
-        JobStatus::Running
+        job(store.as_ref(), &destination_uri).await.status,
+        JobStatus::Running,
+        "{backend}"
     );
 }
 
 #[tokio::test]
+#[serial]
 async fn updating_progress_keeps_job_running() {
-    let clock = Arc::new(TestClock::new(10));
-    let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
-        .await
-        .unwrap();
-    let job = new_job(
+    for backend in BACKENDS {
+        let clock = Arc::new(TestClock::new(10));
+        let store = store_with_clock(backend, Arc::clone(&clock) as Arc<dyn Clock>).await;
+        updating_progress_keeps_job_running_impl(backend, store, clock).await;
+    }
+}
+
+async fn updating_progress_keeps_job_running_impl(
+    backend: &str,
+    store: Arc<dyn JobStore>,
+    clock: Arc<TestClock>,
+) {
+    let created = new_job(
         "test-user",
         "/datasets/source",
         "s3://destination-bucket/data.lance",
         3,
     )
     .unwrap();
-    store.create_job(job).await.unwrap();
+    store.create_job(created).await.unwrap();
     let claim = store.claim_jobs(1, 1_000).await.unwrap().remove(0);
     let destination_uri = claim.destination_uri.clone();
 
@@ -221,17 +292,26 @@ async fn updating_progress_keeps_job_running() {
         .await
         .unwrap();
 
-    let job = store.get_job(&destination_uri).await.unwrap();
-    assert_eq!(job.status, JobStatus::Running);
-    assert_eq!(job.progress, progress);
+    let stored = job(store.as_ref(), &destination_uri).await;
+    assert_eq!(stored.status, JobStatus::Running, "{backend}");
+    assert_eq!(stored.progress, progress, "{backend}");
 }
 
 #[tokio::test]
+#[serial]
 async fn updating_lease_keeps_job_running() {
-    let clock = Arc::new(TestClock::new(10));
-    let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
-        .await
-        .unwrap();
+    for backend in BACKENDS {
+        let clock = Arc::new(TestClock::new(10));
+        let store = store_with_clock(backend, Arc::clone(&clock) as Arc<dyn Clock>).await;
+        updating_lease_keeps_job_running_impl(backend, store, clock).await;
+    }
+}
+
+async fn updating_lease_keeps_job_running_impl(
+    backend: &str,
+    store: Arc<dyn JobStore>,
+    clock: Arc<TestClock>,
+) {
     store
         .create_job(
             new_job(
@@ -258,17 +338,21 @@ async fn updating_lease_keeps_job_running() {
         .await
         .unwrap();
 
-    let job = store.get_job(&destination_uri).await.unwrap();
-    assert_eq!(job.status, JobStatus::Running);
-    assert_eq!(job.lease_expiration_timestamp_ms, Some(220));
+    let stored = job(store.as_ref(), &destination_uri).await;
+    assert_eq!(stored.status, JobStatus::Running, "{backend}");
+    assert_eq!(stored.lease_expiration_timestamp_ms, Some(220), "{backend}");
 }
 
 #[tokio::test]
+#[serial]
 async fn completing_a_job_clears_its_lease() {
-    let clock = Arc::new(TestClock::new(10));
-    let store = SqliteJobStore::open_with_clock(":memory:", clock)
-        .await
-        .unwrap();
+    for backend in BACKENDS {
+        let store = store_with_clock(backend, Arc::new(TestClock::new(10))).await;
+        completing_a_job_clears_its_lease_impl(backend, store).await;
+    }
+}
+
+async fn completing_a_job_clears_its_lease_impl(backend: &str, store: Arc<dyn JobStore>) {
     let destination_uri = "s3://destination-bucket/completed.lance";
     store
         .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
@@ -290,10 +374,10 @@ async fn completing_a_job_clears_its_lease() {
         .await
         .unwrap();
 
-    let job = store.get_job(destination_uri).await.unwrap();
-    assert_eq!(job.status, JobStatus::Succeeded);
-    assert_eq!(job.lease_expiration_timestamp_ms, None);
-    assert_eq!(job.progress, progress);
+    let stored = job(store.as_ref(), destination_uri).await;
+    assert_eq!(stored.status, JobStatus::Succeeded, "{backend}");
+    assert_eq!(stored.lease_expiration_timestamp_ms, None, "{backend}");
+    assert_eq!(stored.progress, progress, "{backend}");
     let ongoing_jobs = store
         .query_jobs(JobQuery {
             creator: None,
@@ -307,15 +391,19 @@ async fn completing_a_job_clears_its_lease() {
         })
         .await
         .unwrap();
-    assert!(ongoing_jobs.is_empty());
+    assert!(ongoing_jobs.is_empty(), "{backend}");
 }
 
 #[tokio::test]
+#[serial]
 async fn failures_retry_until_attempt_cap() {
-    let clock = Arc::new(TestClock::new(10));
-    let store = SqliteJobStore::open_with_clock(":memory:", clock)
-        .await
-        .unwrap();
+    for backend in BACKENDS {
+        let store = store_with_clock(backend, Arc::new(TestClock::new(10))).await;
+        failures_retry_until_attempt_cap_impl(backend, store).await;
+    }
+}
+
+async fn failures_retry_until_attempt_cap_impl(backend: &str, store: Arc<dyn JobStore>) {
     let destination_uri = "s3://destination-bucket/failed.lance";
     store
         .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
@@ -324,7 +412,7 @@ async fn failures_retry_until_attempt_cap() {
 
     for attempt in 1..=MAX_JOB_ATTEMPTS {
         let claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
-        assert_eq!(claim.attempt, attempt);
+        assert_eq!(claim.attempt, attempt, "{backend}");
         store
             .fail_job(FailureUpdate {
                 destination_uri: destination_uri.to_owned(),
@@ -336,10 +424,17 @@ async fn failures_retry_until_attempt_cap() {
             .unwrap();
     }
 
-    let job = store.get_job(destination_uri).await.unwrap();
-    assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(job.error_reasons.len(), MAX_JOB_ATTEMPTS as usize);
-    assert!(store.claim_jobs(1, 100).await.unwrap().is_empty());
+    let stored = job(store.as_ref(), destination_uri).await;
+    assert_eq!(stored.status, JobStatus::Failed, "{backend}");
+    assert_eq!(
+        stored.error_reasons.len(),
+        MAX_JOB_ATTEMPTS as usize,
+        "{backend}"
+    );
+    assert!(
+        store.claim_jobs(1, 100).await.unwrap().is_empty(),
+        "{backend}"
+    );
     let failed_jobs = store
         .query_jobs(JobQuery {
             creator: Some("test-user".to_owned()),
@@ -353,16 +448,25 @@ async fn failures_retry_until_attempt_cap() {
         })
         .await
         .unwrap();
-    assert_eq!(failed_jobs.len(), 1);
-    assert_eq!(failed_jobs[0].destination_uri, destination_uri);
+    assert_eq!(failed_jobs.len(), 1, "{backend}");
+    assert_eq!(failed_jobs[0].destination_uri, destination_uri, "{backend}");
 }
 
 #[tokio::test]
+#[serial]
 async fn final_expired_attempt_becomes_failed() {
-    let clock = Arc::new(TestClock::new(10));
-    let store = SqliteJobStore::open_with_clock(":memory:", clock.clone())
-        .await
-        .unwrap();
+    for backend in BACKENDS {
+        let clock = Arc::new(TestClock::new(10));
+        let store = store_with_clock(backend, Arc::clone(&clock) as Arc<dyn Clock>).await;
+        final_expired_attempt_becomes_failed_impl(backend, store, clock).await;
+    }
+}
+
+async fn final_expired_attempt_becomes_failed_impl(
+    backend: &str,
+    store: Arc<dyn JobStore>,
+    clock: Arc<TestClock>,
+) {
     let destination_uri = "s3://destination-bucket/expired.lance";
     store
         .create_job(new_job("test-user", "/datasets/source", destination_uri, 3).unwrap())
@@ -382,15 +486,23 @@ async fn final_expired_attempt_becomes_failed() {
             .unwrap();
     }
     let final_claim = store.claim_jobs(1, 100).await.unwrap().remove(0);
-    assert_eq!(final_claim.attempt, MAX_JOB_ATTEMPTS);
+    assert_eq!(final_claim.attempt, MAX_JOB_ATTEMPTS, "{backend}");
     clock.set(110);
 
-    assert!(store.claim_jobs(1, 100).await.unwrap().is_empty());
-    let job = store.get_job(destination_uri).await.unwrap();
-    assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(job.error_reasons.len(), MAX_JOB_ATTEMPTS as usize);
+    assert!(
+        store.claim_jobs(1, 100).await.unwrap().is_empty(),
+        "{backend}"
+    );
+    let stored = job(store.as_ref(), destination_uri).await;
+    assert_eq!(stored.status, JobStatus::Failed, "{backend}");
     assert_eq!(
-        job.error_reasons.last().unwrap().reason,
-        "lease expired on final attempt"
+        stored.error_reasons.len(),
+        MAX_JOB_ATTEMPTS as usize,
+        "{backend}"
+    );
+    assert_eq!(
+        stored.error_reasons.last().unwrap().reason,
+        "lease expired on final attempt",
+        "{backend}"
     );
 }

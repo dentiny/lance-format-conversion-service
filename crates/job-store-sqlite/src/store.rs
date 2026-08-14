@@ -50,7 +50,12 @@ impl SqliteJobStore {
         Self::open_with_clock(path, Arc::new(SystemClock)).await
     }
 
-    pub(super) async fn open_with_clock(
+    /// Opens a `SQLite` job store with a caller-supplied clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `SQLite` cannot be opened, configured, or migrated.
+    pub async fn open_with_clock(
         path: impl AsRef<Path>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, StoreError> {
@@ -88,12 +93,6 @@ impl SqliteJobStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(database_error)
-    }
-
-    #[cfg(test)]
-    pub(super) async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
-        let mut connection = self.pool.acquire().await.map_err(database_error)?;
-        load_job(&mut connection, destination_uri).await
     }
 }
 
