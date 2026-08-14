@@ -15,7 +15,7 @@ const BLOB_INLINE_THRESHOLD_MIB_ENV: &str = "BLOB_INLINE_THRESHOLD_MIB";
 const BLOB_DEDICATED_THRESHOLD_MIB_ENV: &str = "BLOB_DEDICATED_THRESHOLD_MIB";
 
 /// Default job-store database URL.
-pub const DEFAULT_DATABASE_URL: &str = "sqlite://./data/service.db";
+pub const DEFAULT_DATABASE_URL: &str = "postgres://127.0.0.1:5432/lance_jobs";
 /// Default number of conversion workers.
 pub const DEFAULT_WORKER_COUNT: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 /// Default queue polling interval in milliseconds.

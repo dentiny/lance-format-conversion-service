@@ -94,7 +94,8 @@ the process supervisor can restart it.
 
 Configuration is read only from environment variables:
 
-- `DATABASE_URL` — default `sqlite://./data/service.db`
+- `DATABASE_URL` — default `postgres://127.0.0.1:5432/lance_jobs`. SQLite URLs
+  require building with `--features sqlite`
 - `WORKER_COUNT` — default `256`
 - `POLL_INTERVAL_MS` — default `1000`
 - `LEASE_DURATION_SECS` — default `900`
@@ -107,5 +108,5 @@ Configuration is read only from environment variables:
 Run it from the workspace root:
 
 ```shell
-DATABASE_URL=sqlite://./data/service.db cargo run -p lance-reconciler
+DATABASE_URL=postgres://127.0.0.1:5432/lance_jobs cargo run -p lance-reconciler
 ```

@@ -1,6 +1,6 @@
 [package]
-name = "lance-job-store-sqlite"
-description = "SQLite implementation of the Lance conversion job store"
+name = "lance-job-store-postgres"
+description = "PostgreSQL implementation of the Lance conversion job store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,10 +16,12 @@ lance-conversion-core.workspace = true
 lance-job-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sqlx = { workspace = true, features = ["sqlite"] }
-tokio = { workspace = true, features = ["fs", "rt"] }
+sqlx = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
 lance-test-support.workspace = true
-tempfile.workspace = true
+# Bundled PGlite 17.5. Keep Cargo.lock's virtual-net at 0.702.0-alpha.3;
+# wasmer-wasix 0.702.0-alpha.3 does not compile against virtual-net 0.702.1.
+pglite-oxide = { version = "0.5", default-features = false, features = ["bundled"] }
+serial_test = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

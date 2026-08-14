@@ -6,7 +6,7 @@ const LISTEN_ADDRESS_ENV: &str = "LISTEN_ADDRESS";
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
 const DEFAULT_LISTEN_ADDRESS: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080));
-const DEFAULT_DATABASE_URL: &str = "sqlite://./data/service.db";
+const DEFAULT_DATABASE_URL: &str = "postgres://127.0.0.1:5432/lance_jobs";
 
 #[derive(Debug, Clone)]
 pub struct Config {

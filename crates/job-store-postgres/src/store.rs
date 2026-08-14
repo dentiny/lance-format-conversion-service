@@ -1,0 +1,668 @@
+use std::{
+    str::FromStr,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use async_trait::async_trait;
+use sqlx::{
+    PgConnection, PgPool, Postgres, QueryBuilder, Row, Transaction,
+    postgres::{PgPoolOptions, PgRow},
+};
+
+use lance_conversion_core::job::{
+    BlobColumnSpec, CompletionUpdate, FailureUpdate, IndexSpec, Job, JobError, JobProgress,
+    JobStatus, LeaseUpdate, MAX_JOB_ATTEMPTS, NewJob, ProgressUpdate,
+};
+use lance_job_store::{JobOrderField, JobQuery, JobStore, StoreError};
+
+const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const BLOB_COLUMNS_JSON_COLUMN: &str = "blob_columns_json";
+const INDICES_JSON_COLUMN: &str = "indices_json";
+const DEFAULT_MAX_CONNECTIONS: u32 = 8;
+const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
+    status, creation_timestamp_ms, update_timestamp_ms, attempt,
+    error_reasons_json::text AS error_reasons_json,
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    blob_columns_json::text AS blob_columns_json,
+    indices_json::text AS indices_json
+    FROM jobs";
+const LOAD_JOB_SQL: &str = "SELECT creator, source_uri, destination_uri,
+    status, creation_timestamp_ms, update_timestamp_ms, attempt,
+    error_reasons_json::text AS error_reasons_json,
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    blob_columns_json::text AS blob_columns_json,
+    indices_json::text AS indices_json
+    FROM jobs
+    WHERE destination_uri = $1";
+
+#[allow(clippy::struct_field_names)]
+struct SqlProgress {
+    rows_read: i64,
+    rows_written: i64,
+    rows_total: i64,
+}
+
+#[derive(Clone)]
+pub struct PostgresJobStore {
+    pool: PgPool,
+    clock: Arc<dyn Clock>,
+}
+
+impl PostgresJobStore {
+    /// Opens a `PostgreSQL` job store and applies embedded migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `PostgreSQL` cannot be reached, configured, or
+    /// migrated.
+    pub async fn open(database_url: &str) -> Result<Self, StoreError> {
+        Self::connect(
+            database_url,
+            Arc::new(SystemClock),
+            DEFAULT_MAX_CONNECTIONS,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn open_with_clock(
+        database_url: &str,
+        clock: Arc<dyn Clock>,
+        schema: &str,
+    ) -> Result<Self, StoreError> {
+        Self::connect(database_url, clock, 1, Some(schema)).await
+    }
+
+    async fn connect(
+        database_url: &str,
+        clock: Arc<dyn Clock>,
+        max_connections: u32,
+        schema: Option<&str>,
+    ) -> Result<Self, StoreError> {
+        let search_path = match schema {
+            Some(schema) => {
+                create_schema(database_url, schema).await?;
+                Some(format!("{}, public", quote_ident(schema)?))
+            }
+            None => None,
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .after_connect(move |connection, _metadata| {
+                let search_path = search_path.clone();
+                Box::pin(async move {
+                    if let Some(search_path) = search_path.as_deref() {
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                            "SET search_path TO {search_path}"
+                        )))
+                        .execute(&mut *connection)
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .connect(database_url)
+            .await
+            .map_err(database_error)?;
+        sqlx::raw_sql(INITIAL_MIGRATION)
+            .execute(&pool)
+            .await
+            .map_err(database_error)?;
+
+        Ok(Self { pool, clock })
+    }
+
+    async fn begin(&self) -> Result<Transaction<'static, Postgres>, StoreError> {
+        self.pool.begin().await.map_err(database_error)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn get_job(&self, destination_uri: &str) -> Result<Job, StoreError> {
+        let mut connection = self.pool.acquire().await.map_err(database_error)?;
+        load_job(&mut connection, destination_uri).await
+    }
+}
+
+pub(super) trait Clock: Send + Sync {
+    fn now_ms(&self) -> Result<i64, StoreError>;
+}
+
+struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_ms(&self) -> Result<i64, StoreError> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| StoreError::Worker(error.to_string()))?
+            .as_millis();
+        i64::try_from(millis).map_err(|error| StoreError::Worker(error.to_string()))
+    }
+}
+
+#[async_trait]
+impl JobStore for PostgresJobStore {
+    async fn create_job(&self, job: NewJob) -> Result<(), StoreError> {
+        let blob_columns_json = serialize_json(&job.blob_columns)?;
+        let indices_json = serialize_json(&job.indices)?;
+        let mut transaction = self.begin().await?;
+        sqlx::query(
+            "INSERT INTO jobs(
+                creator, source_uri, destination_uri, status,
+                creation_timestamp_ms, update_timestamp_ms, blob_columns_json, indices_json
+             ) VALUES ($1, $2, $3, 'queuing', $4, $4, $5::jsonb, $6::jsonb)",
+        )
+        .bind(job.creator)
+        .bind(job.source.uri())
+        .bind(job.destination.uri())
+        .bind(job.creation_timestamp_ms)
+        .bind(blob_columns_json)
+        .bind(indices_json)
+        .execute(&mut *transaction)
+        .await
+        .map_err(job_insert_error)?;
+        transaction.commit().await.map_err(database_error)
+    }
+
+    async fn query_jobs(&self, query: JobQuery) -> Result<Vec<Job>, StoreError> {
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        if query.failed_only && query.ongoing_only {
+            return Err(StoreError::InvalidInput(
+                "failed-only and ongoing-only filters are mutually exclusive".to_owned(),
+            ));
+        }
+        if let (Some(from), Some(to)) = (
+            query.creation_timestamp_ms_from,
+            query.creation_timestamp_ms_to,
+        ) && from > to
+        {
+            return Err(StoreError::InvalidInput(
+                "creation timestamp lower bound exceeds upper bound".to_owned(),
+            ));
+        }
+
+        let mut sql = QueryBuilder::<Postgres>::new(SELECT_JOBS_SQL);
+        sql.push(" WHERE 1 = 1");
+        if let Some(creator) = query.creator {
+            sql.push(" AND creator = ").push_bind(creator);
+        }
+        if query.failed_only {
+            sql.push(" AND status = 'failed'");
+        } else if query.ongoing_only {
+            sql.push(" AND status IN ('queuing', 'running')");
+        }
+        if let Some(timestamp) = query.creation_timestamp_ms_from {
+            sql.push(" AND creation_timestamp_ms >= ")
+                .push_bind(timestamp);
+        }
+        if let Some(timestamp) = query.creation_timestamp_ms_to {
+            sql.push(" AND creation_timestamp_ms <= ")
+                .push_bind(timestamp);
+        }
+        sql.push(" ORDER BY ");
+        match query.order_by {
+            JobOrderField::CreationTimestamp => {
+                sql.push("creation_timestamp_ms");
+            }
+            JobOrderField::UpdateTimestamp => {
+                sql.push("update_timestamp_ms");
+            }
+        }
+        if query.descending {
+            sql.push(" DESC, destination_uri DESC");
+        } else {
+            sql.push(" ASC, destination_uri ASC");
+        }
+        sql.push(" LIMIT ").push_bind(usize_to_i64(query.limit)?);
+        let rows = sql
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(database_error)?;
+        rows.iter().map(row_to_job).collect()
+    }
+
+    async fn claim_jobs(
+        &self,
+        limit: usize,
+        convert_lease_duration_ms: i64,
+    ) -> Result<Vec<Job>, StoreError> {
+        if limit == 0 || convert_lease_duration_ms <= 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut transaction = self.begin().await?;
+        let now_ms = self.clock.now_ms()?;
+        let lease_expiration_timestamp_ms = now_ms
+            .checked_add(convert_lease_duration_ms)
+            .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
+
+        sqlx::query(
+            "UPDATE jobs
+             SET status = 'failed',
+                 update_timestamp_ms = $1,
+                 lease_expiration_timestamp_ms = NULL,
+                 error_reasons_json = error_reasons_json || jsonb_build_array(
+                     jsonb_build_object(
+                         'attempt', attempt,
+                         'error_timestamp_ms', $1,
+                         'reason', 'lease expired on final attempt'
+                     )
+                 )
+             WHERE status = 'running'
+               AND lease_expiration_timestamp_ms <= $1
+               AND attempt >= $2",
+        )
+        .bind(now_ms)
+        .bind(i64::from(MAX_JOB_ATTEMPTS))
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+
+        let destination_rows = sqlx::query(
+            "SELECT destination_uri FROM jobs
+             WHERE attempt < $3
+               AND (
+                   status = 'queuing'
+                   OR (status = 'running' AND lease_expiration_timestamp_ms <= $1)
+               )
+             ORDER BY creation_timestamp_ms, destination_uri
+             LIMIT $2
+             FOR UPDATE SKIP LOCKED",
+        )
+        .bind(now_ms)
+        .bind(usize_to_i64(limit)?)
+        .bind(i64::from(MAX_JOB_ATTEMPTS))
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let destinations = destination_rows
+            .iter()
+            .map(|row| row.try_get::<String, _>(0).map_err(database_error))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut claimed = Vec::with_capacity(destinations.len());
+        for destination_uri in destinations {
+            sqlx::query(
+                "UPDATE jobs
+                 SET status = 'running',
+                     lease_expiration_timestamp_ms = $2,
+                     attempt = attempt + 1,
+                     update_timestamp_ms = $3,
+                     error_reasons_json = CASE
+                         WHEN status = 'running' THEN error_reasons_json || jsonb_build_array(
+                             jsonb_build_object(
+                                 'attempt', attempt,
+                                 'error_timestamp_ms', $3,
+                                 'reason', 'lease expired before completion'
+                             )
+                         )
+                         ELSE error_reasons_json
+                     END
+                 WHERE destination_uri = $1",
+            )
+            .bind(&destination_uri)
+            .bind(lease_expiration_timestamp_ms)
+            .bind(now_ms)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            let job = load_job(&mut transaction, &destination_uri).await?;
+            claimed.push(job);
+        }
+
+        transaction.commit().await.map_err(database_error)?;
+        Ok(claimed)
+    }
+
+    async fn renew_lease(&self, update: LeaseUpdate) -> Result<Job, StoreError> {
+        if update.convert_lease_duration_ms <= 0 {
+            return Err(StoreError::InvalidInput(
+                "lease duration must be positive".to_owned(),
+            ));
+        }
+
+        let mut transaction = self.begin().await?;
+        let now_ms = self.clock.now_ms()?;
+        validate_progress_update(
+            &mut transaction,
+            &update.destination_uri,
+            update.attempt,
+            now_ms,
+            update.progress,
+        )
+        .await?;
+        let lease_expiration_timestamp_ms = now_ms
+            .checked_add(update.convert_lease_duration_ms)
+            .ok_or_else(|| StoreError::InvalidInput("lease timestamp overflow".to_owned()))?;
+        let progress = progress_as_i64(update.progress)?;
+        let changed = sqlx::query(
+            "UPDATE jobs
+             SET lease_expiration_timestamp_ms = $3,
+                 update_timestamp_ms = $4,
+                 rows_read = $5,
+                 rows_written = $6,
+                 rows_total = $7
+             WHERE destination_uri = $1
+               AND status = 'running'
+               AND attempt = $2
+               AND lease_expiration_timestamp_ms > $4",
+        )
+        .bind(&update.destination_uri)
+        .bind(i64::from(update.attempt))
+        .bind(lease_expiration_timestamp_ms)
+        .bind(now_ms)
+        .bind(progress.rows_read)
+        .bind(progress.rows_written)
+        .bind(progress.rows_total)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        if changed == 0 {
+            return Err(StoreError::LeaseLost);
+        }
+        let job = load_job(&mut transaction, &update.destination_uri).await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(job)
+    }
+
+    async fn checkpoint_progress(&self, update: ProgressUpdate) -> Result<Job, StoreError> {
+        let mut transaction = self.begin().await?;
+        let now_ms = self.clock.now_ms()?;
+        validate_progress_update(
+            &mut transaction,
+            &update.destination_uri,
+            update.attempt,
+            now_ms,
+            update.progress,
+        )
+        .await?;
+        let progress = progress_as_i64(update.progress)?;
+        let changed = sqlx::query(
+            "UPDATE jobs
+             SET update_timestamp_ms = $3,
+                 rows_read = $4,
+                 rows_written = $5,
+                 rows_total = $6
+             WHERE destination_uri = $1
+               AND status = 'running'
+               AND attempt = $2
+               AND lease_expiration_timestamp_ms > $3",
+        )
+        .bind(&update.destination_uri)
+        .bind(i64::from(update.attempt))
+        .bind(now_ms)
+        .bind(progress.rows_read)
+        .bind(progress.rows_written)
+        .bind(progress.rows_total)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        if changed == 0 {
+            return Err(StoreError::LeaseLost);
+        }
+        let job = load_job(&mut transaction, &update.destination_uri).await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(job)
+    }
+
+    async fn complete_job(&self, update: CompletionUpdate) -> Result<(), StoreError> {
+        let mut transaction = self.begin().await?;
+        let now_ms = self.clock.now_ms()?;
+        validate_progress_update(
+            &mut transaction,
+            &update.destination_uri,
+            update.attempt,
+            now_ms,
+            update.progress,
+        )
+        .await?;
+        let progress = progress_as_i64(update.progress)?;
+        let changed = sqlx::query(
+            "UPDATE jobs
+             SET status = 'succeeded',
+                 update_timestamp_ms = $3,
+                 lease_expiration_timestamp_ms = NULL,
+                 rows_read = $4,
+                 rows_written = $5,
+                 rows_total = $6
+             WHERE destination_uri = $1
+               AND status = 'running'
+               AND attempt = $2
+               AND lease_expiration_timestamp_ms > $3",
+        )
+        .bind(update.destination_uri)
+        .bind(i64::from(update.attempt))
+        .bind(now_ms)
+        .bind(progress.rows_read)
+        .bind(progress.rows_written)
+        .bind(progress.rows_total)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        if changed == 0 {
+            return Err(StoreError::LeaseLost);
+        }
+        transaction.commit().await.map_err(database_error)
+    }
+
+    async fn fail_job(&self, update: FailureUpdate) -> Result<(), StoreError> {
+        let mut transaction = self.begin().await?;
+        let now_ms = self.clock.now_ms()?;
+        let mut job = validate_progress_update(
+            &mut transaction,
+            &update.destination_uri,
+            update.attempt,
+            now_ms,
+            update.progress,
+        )
+        .await?;
+        job.error_reasons.push(JobError {
+            attempt: update.attempt,
+            error_timestamp_ms: now_ms,
+            reason: update.reason,
+        });
+        let error_reasons_json = serde_json::to_string(&job.error_reasons)
+            .map_err(|error| StoreError::Worker(error.to_string()))?;
+        let status = if update.attempt >= MAX_JOB_ATTEMPTS {
+            JobStatus::Failed
+        } else {
+            JobStatus::Queuing
+        };
+        let progress = progress_as_i64(update.progress)?;
+        let changed = sqlx::query(
+            "UPDATE jobs
+             SET status = $3,
+                 update_timestamp_ms = $4,
+                 error_reasons_json = $5::jsonb,
+                 lease_expiration_timestamp_ms = NULL,
+                 rows_read = $6,
+                 rows_written = $7,
+                 rows_total = $8
+             WHERE destination_uri = $1
+               AND status = 'running'
+               AND attempt = $2
+               AND lease_expiration_timestamp_ms > $4",
+        )
+        .bind(update.destination_uri)
+        .bind(i64::from(update.attempt))
+        .bind(status.to_string())
+        .bind(now_ms)
+        .bind(error_reasons_json)
+        .bind(progress.rows_read)
+        .bind(progress.rows_written)
+        .bind(progress.rows_total)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        if changed == 0 {
+            return Err(StoreError::LeaseLost);
+        }
+        transaction.commit().await.map_err(database_error)
+    }
+}
+
+async fn validate_progress_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    destination_uri: &str,
+    attempt: u32,
+    now_ms: i64,
+    incoming: JobProgress,
+) -> Result<Job, StoreError> {
+    let job = load_job(transaction, destination_uri).await?;
+    if job.status != JobStatus::Running
+        || job.attempt != attempt
+        || job
+            .lease_expiration_timestamp_ms
+            .is_none_or(|expiry| expiry <= now_ms)
+    {
+        return Err(StoreError::LeaseLost);
+    }
+    if incoming.rows_total > 0
+        && (incoming.rows_read > incoming.rows_total || incoming.rows_written > incoming.rows_total)
+    {
+        return Err(StoreError::InvalidInput(
+            "read or written rows exceed total rows".to_owned(),
+        ));
+    }
+    Ok(job)
+}
+
+async fn load_job(connection: &mut PgConnection, destination_uri: &str) -> Result<Job, StoreError> {
+    let row = sqlx::query(LOAD_JOB_SQL)
+        .bind(destination_uri)
+        .fetch_optional(connection)
+        .await
+        .map_err(database_error)?
+        .ok_or(StoreError::NotFound)?;
+    row_to_job(&row)
+}
+
+fn row_to_job(row: &PgRow) -> Result<Job, StoreError> {
+    let error_reasons_json = row
+        .try_get::<String, _>("error_reasons_json")
+        .map_err(database_error)?;
+    let error_reasons = deserialize_json::<Vec<JobError>>(&error_reasons_json)?;
+    let blob_columns_json = row
+        .try_get::<String, _>(BLOB_COLUMNS_JSON_COLUMN)
+        .map_err(database_error)?;
+    let indices_json = row
+        .try_get::<String, _>(INDICES_JSON_COLUMN)
+        .map_err(database_error)?;
+    Ok(Job {
+        creator: row.try_get("creator").map_err(database_error)?,
+        source_uri: row.try_get("source_uri").map_err(database_error)?,
+        destination_uri: row.try_get("destination_uri").map_err(database_error)?,
+        blob_columns: deserialize_json::<Vec<BlobColumnSpec>>(&blob_columns_json)?,
+        indices: deserialize_json::<Vec<IndexSpec>>(&indices_json)?,
+        status: parse_value(&row.try_get::<String, _>("status").map_err(database_error)?)?,
+        creation_timestamp_ms: row
+            .try_get("creation_timestamp_ms")
+            .map_err(database_error)?,
+        update_timestamp_ms: row.try_get("update_timestamp_ms").map_err(database_error)?,
+        attempt: i64_to_u32(row.try_get("attempt").map_err(database_error)?)?,
+        error_reasons,
+        lease_expiration_timestamp_ms: row
+            .try_get("lease_expiration_timestamp_ms")
+            .map_err(database_error)?,
+        progress: JobProgress {
+            rows_read: i64_to_u64(row.try_get("rows_read").map_err(database_error)?)?,
+            rows_written: i64_to_u64(row.try_get("rows_written").map_err(database_error)?)?,
+            rows_total: i64_to_u64(row.try_get("rows_total").map_err(database_error)?)?,
+        },
+    })
+}
+
+async fn create_schema(database_url: &str, schema: &str) -> Result<(), StoreError> {
+    let ident = quote_ident(schema)?;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(database_url)
+        .await
+        .map_err(database_error)?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {ident}")))
+        .execute(&pool)
+        .await
+        .map_err(database_error)?;
+    pool.close().await;
+    Ok(())
+}
+
+fn quote_ident(name: &str) -> Result<String, StoreError> {
+    let valid = !name.is_empty()
+        && !name.starts_with(|character: char| character.is_ascii_digit())
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        });
+    if valid {
+        Ok(format!("\"{name}\""))
+    } else {
+        Err(StoreError::InvalidInput(
+            "schema name must be a lowercase SQL identifier".to_owned(),
+        ))
+    }
+}
+
+fn parse_value<T>(value: &str) -> Result<T, StoreError>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
+    T::from_str(value).map_err(|error| StoreError::Database(error.to_string()))
+}
+
+fn serialize_json<T: serde::Serialize>(value: &T) -> Result<String, StoreError> {
+    serde_json::to_string(value).map_err(|error| StoreError::Worker(error.to_string()))
+}
+
+fn deserialize_json<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, StoreError> {
+    serde_json::from_str(value).map_err(|error| StoreError::Database(error.to_string()))
+}
+
+fn i64_to_u64(value: i64) -> Result<u64, StoreError> {
+    u64::try_from(value).map_err(|error| StoreError::Database(error.to_string()))
+}
+
+fn i64_to_u32(value: i64) -> Result<u32, StoreError> {
+    u32::try_from(value).map_err(|error| StoreError::Database(error.to_string()))
+}
+
+fn usize_to_i64(value: usize) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string()))
+}
+
+fn progress_as_i64(progress: JobProgress) -> Result<SqlProgress, StoreError> {
+    Ok(SqlProgress {
+        rows_read: u64_as_i64(progress.rows_read)?,
+        rows_written: u64_as_i64(progress.rows_written)?,
+        rows_total: u64_as_i64(progress.rows_total)?,
+    })
+}
+
+fn u64_as_i64(value: u64) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|error| StoreError::InvalidInput(error.to_string()))
+}
+
+// This signature intentionally matches `Result::map_err`, which transfers ownership.
+#[allow(clippy::needless_pass_by_value)]
+fn database_error(error: sqlx::Error) -> StoreError {
+    StoreError::Database(error.to_string())
+}
+
+fn job_insert_error(error: sqlx::Error) -> StoreError {
+    if error
+        .as_database_error()
+        .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+    {
+        StoreError::Conflict("destination already has a job".to_owned())
+    } else {
+        database_error(error)
+    }
+}

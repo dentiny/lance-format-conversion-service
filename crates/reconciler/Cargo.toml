@@ -10,6 +10,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["postgres"]
+postgres = ["lance-job-store-factory/postgres"]
+sqlite = ["lance-job-store-factory/sqlite"]
+
 [dependencies]
 lance-conversion-core.workspace = true
 lance-converter.workspace = true

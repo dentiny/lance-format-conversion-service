@@ -61,7 +61,8 @@ files into a versioned dataset designed for multimodal and AI workloads:
 ### Job execution and reliability
 
 - Persist jobs, conversion options, progress, and structured error history in
-  async SQLx SQLite.
+  async SQLx PostgreSQL by default, or SQLite when the `sqlite` feature is
+  enabled.
 - Atomically claim jobs with renewable leases and attempt-based fencing.
 - Run a bounded worker pool in the reconciler and checkpoint row progress.
 - Retry interrupted or failed attempts up to 16 times.
@@ -82,8 +83,11 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - `crates/converter`: Parquet and Hugging Face readers, schema inspection,
   validation, Lance writes, and progress accounting
 - `crates/job-store`: object-safe `JobStore` interface and storage errors
-- `crates/job-store-factory`: database URL dispatch and backend construction
+- `crates/job-store-factory`: database URL dispatch and backend construction.
+  `postgres` is the default Cargo feature; `sqlite` is opt-in
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
+- `crates/job-store-postgres`: PostgreSQL store, embedded migrations, and
+  pglite-oxide integration tests
 - `crates/web`: `lance-web`, the HTTP job control plane and embedded UI
 - [`crates/reconciler`](crates/reconciler/README.md): bounded polling, lease
   maintenance, progress checkpointing, and conversion execution
@@ -108,11 +112,12 @@ its conversion workers in one process.
 - In the final production-hardening milestone, add structured tracing,
   `jemalloc`, and request-triggered CPU and memory profiling.
 
-SQLite development deployments must run web and reconciler in the same pod or
-on the same host, backed by one shared local volume containing the database.
-SQLite is not suitable for independent pods because its locking and WAL files
-require a shared local filesystem. Production deployments with separate web
-and reconciler pods require PostgreSQL.
+SQLite is available behind the `sqlite` Cargo feature. SQLite deployments must
+run web and reconciler in the same pod or on the same host, backed by one
+shared local volume containing the database. SQLite is not suitable for
+independent pods because its locking and WAL files require a shared local
+filesystem. The default `postgres` feature supports separate web and
+reconciler processes against one PostgreSQL database.
 
 ## Quick start
 
@@ -120,27 +125,23 @@ and reconciler pods require PostgreSQL.
 
 - Rust 1.97.1, installed automatically by `rustup` from
   `rust-toolchain.toml`
-- A local filesystem path for development, or AWS credentials for S3
+- PostgreSQL for the default backend, or a local filesystem path when using
+  SQLite
+- AWS credentials for S3, when reading or writing object storage
 - `HF_TOKEN` in the environment when reading a private Hugging Face dataset
-
-Create the development database directory:
-
-```shell
-mkdir -p data
-```
 
 Start the web control plane in the first terminal:
 
 ```shell
 LISTEN_ADDRESS=127.0.0.1:8080 \
-DATABASE_URL=sqlite://./data/service.db \
+DATABASE_URL=postgres://user:pass@127.0.0.1:5432/lance_jobs \
 cargo run -p lance-web
 ```
 
 Start the reconciler against the same database in a second terminal:
 
 ```shell
-DATABASE_URL=sqlite://./data/service.db \
+DATABASE_URL=postgres://user:pass@127.0.0.1:5432/lance_jobs \
 WORKER_COUNT=4 \
 POLL_INTERVAL_MS=1000 \
 LEASE_DURATION_SECS=900 \
@@ -153,7 +154,17 @@ cargo run -p lance-reconciler
 ```
 
 Both processes are required: `lance-web` accepts and displays jobs, while
-`lance-reconciler` claims and executes them.
+`lance-reconciler` claims and executes them. `postgres://` and `postgresql://`
+URLs are accepted. Omit `DATABASE_URL` to use
+`postgres://127.0.0.1:5432/lance_jobs`.
+
+For same-host SQLite development, enable the `sqlite` feature:
+
+```shell
+mkdir -p data
+DATABASE_URL=sqlite://./data/service.db cargo run -p lance-web --features sqlite
+DATABASE_URL=sqlite://./data/service.db cargo run -p lance-reconciler --features sqlite
+```
 
 Open these pages:
 

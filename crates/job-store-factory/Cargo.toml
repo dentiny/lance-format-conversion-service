@@ -10,7 +10,13 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["postgres"]
+postgres = ["dep:lance-job-store-postgres"]
+sqlite = ["dep:lance-job-store-sqlite"]
+
 [dependencies]
 lance-job-store.workspace = true
-lance-job-store-sqlite.workspace = true
+lance-job-store-postgres = { workspace = true, optional = true }
+lance-job-store-sqlite = { workspace = true, optional = true }
 thiserror.workspace = true
