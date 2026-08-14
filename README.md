@@ -85,8 +85,8 @@ files into a versioned dataset designed for multimodal and AI workloads:
 - `crates/job-store-factory`: database URL dispatch and backend construction
 - `crates/job-store-sqlite`: SQLite store, embedded migrations, and store tests
 - `crates/web`: `lance-web`, the HTTP job control plane and embedded UI
-- `crates/reconciler`: bounded polling, lease maintenance, progress
-  checkpointing, and conversion execution
+- [`crates/reconciler`](crates/reconciler/README.md): bounded polling, lease
+  maintenance, progress checkpointing, and conversion execution
 
 There are exactly two deployables: `lance-web` and `lance-reconciler`. There is
 no separate worker or maintenance process. The reconciler claims jobs and runs
@@ -144,7 +144,7 @@ DATABASE_URL=sqlite://./data/service.db \
 WORKER_COUNT=4 \
 POLL_INTERVAL_MS=1000 \
 LEASE_DURATION_SECS=900 \
-LEASE_RENEW_INTERVAL_SECS=300 \
+LEASE_RENEW_INTERVAL_SECS=180 \
 PROGRESS_INTERVAL_SECS=30 \
 TARGET_LANCE_FILE_SIZE_MIB=512 \
 BLOB_INLINE_THRESHOLD_MIB=2 \

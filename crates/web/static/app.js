@@ -450,7 +450,10 @@ function createErrorCell(job) {
   for (let index = errors.length - 1; index >= 0; index -= 1) {
     const error = errors[index] || {};
     const reason = error.reason || error.error || String(error);
-    details.append(makeElement("p", "", `Attempt ${error.attempt ?? "—"} · ${reason}`));
+    const occurredAt = formatTimestamp(error.error_timestamp_ms);
+    details.append(
+      makeElement("p", "", `Attempt ${error.attempt ?? "—"} · ${occurredAt} · ${reason}`),
+    );
   }
   cell.append(details);
   return cell;

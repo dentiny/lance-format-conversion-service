@@ -23,7 +23,7 @@ pub const DEFAULT_POLL_INTERVAL_MS: NonZeroU64 = NonZeroU64::new(1_000).unwrap()
 /// Default lease duration in seconds.
 pub const DEFAULT_LEASE_DURATION_SECS: NonZeroU64 = NonZeroU64::new(900).unwrap();
 /// Default lease renewal interval in seconds.
-pub const DEFAULT_LEASE_RENEW_INTERVAL_SECS: NonZeroU64 = NonZeroU64::new(300).unwrap();
+pub const DEFAULT_LEASE_RENEW_INTERVAL_SECS: NonZeroU64 = NonZeroU64::new(180).unwrap();
 /// Default durable progress checkpoint interval in seconds.
 pub const DEFAULT_PROGRESS_INTERVAL_SECS: NonZeroU64 = NonZeroU64::new(30).unwrap();
 /// Default soft target size for generated Lance data files in MiB.
@@ -89,13 +89,13 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns an error when lease renewal is not shorter than the lease,
+    /// Returns an error when the lease is less than five renewal intervals,
     /// progress updates are less frequent than lease renewal, or the lease
     /// duration cannot be represented in milliseconds.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.lease_renew_interval_secs >= self.lease_duration_secs {
+        if self.lease_duration_secs.get() / self.lease_renew_interval_secs.get() < 5 {
             return Err(ConfigError::InvalidInput(
-                "lease renewal interval must be shorter than lease duration",
+                "lease duration must be at least five times the lease renewal interval",
             ));
         }
         if self.progress_interval_secs > self.lease_renew_interval_secs {

@@ -70,44 +70,69 @@ async fn run_job(
     let mut progress_checkpoint = interval_at(now + progress_every, progress_every);
 
     loop {
-        tokio::select! {
-            result = &mut conversion => {
+        enum Event<T> {
+            ConversionFinished(T),
+            RenewLease,
+            CheckpointProgress,
+        }
+
+        // `conversion` is pinned and retained across iterations, and
+        // `Interval::tick` is cancellation-safe. Store writes happen after the
+        // selection so another ready arm cannot cancel them midway.
+        let event = tokio::select! {
+            result = &mut conversion => Event::ConversionFinished(result),
+            _ = lease_renewal.tick() => Event::RenewLease,
+            _ = progress_checkpoint.tick() => Event::CheckpointProgress,
+        };
+
+        match event {
+            Event::ConversionFinished(result) => {
                 return match result {
                     Ok(final_progress) => {
-                        store.complete_job(CompletionUpdate {
-                            destination_uri,
-                            attempt,
-                            progress: final_progress,
-                        }).await?;
+                        store
+                            .complete_job(CompletionUpdate {
+                                destination_uri,
+                                attempt,
+                                progress: final_progress,
+                            })
+                            .await?;
                         Ok(())
                     }
                     Err(error) => {
-                        store.fail_job(FailureUpdate {
-                            destination_uri,
-                            attempt,
-                            progress: progress.snapshot(),
-                            reason: error.to_string(),
-                        }).await?;
+                        store
+                            .fail_job(FailureUpdate {
+                                destination_uri,
+                                attempt,
+                                progress: progress.snapshot(),
+                                reason: error.to_string(),
+                            })
+                            .await?;
                         Ok(())
                     }
                 };
             }
-            _ = lease_renewal.tick() => {
-                if let Err(error) = store.renew_lease(LeaseUpdate {
-                    destination_uri: destination_uri.clone(),
-                    attempt,
-                    convert_lease_duration_ms,
-                    progress: progress.snapshot(),
-                }).await {
+            Event::RenewLease => {
+                if let Err(error) = store
+                    .renew_lease(LeaseUpdate {
+                        destination_uri: destination_uri.clone(),
+                        attempt,
+                        convert_lease_duration_ms,
+                        progress: progress.snapshot(),
+                    })
+                    .await
+                {
                     return Err(error.into());
                 }
             }
-            _ = progress_checkpoint.tick() => {
-                if let Err(error) = store.checkpoint_progress(ProgressUpdate {
-                    destination_uri: destination_uri.clone(),
-                    attempt,
-                    progress: progress.snapshot(),
-                }).await {
+            Event::CheckpointProgress => {
+                if let Err(error) = store
+                    .checkpoint_progress(ProgressUpdate {
+                        destination_uri: destination_uri.clone(),
+                        attempt,
+                        progress: progress.snapshot(),
+                    })
+                    .await
+                {
                     return Err(error.into());
                 }
             }
@@ -135,7 +160,7 @@ mod tests {
     };
     use futures::TryStreamExt;
     use lance::{Dataset, index::DatasetIndexExt};
-    use lance_conversion_core::job::{IndexSpec, IndexType, Job, JobStatus};
+    use lance_conversion_core::job::{IndexSpec, IndexType, Job, JobStatus, MAX_JOB_ATTEMPTS};
     use lance_converter::Converter;
     use lance_job_store::JobStore;
     use lance_job_store_sqlite::SqliteJobStore;
@@ -243,6 +268,47 @@ mod tests {
         let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
         assert_eq!(job.status, JobStatus::Queuing);
         assert_eq!(job.error_reasons.len(), EXPECTED_ERROR_COUNT);
+    }
+
+    #[tokio::test]
+    async fn conversion_failure_marks_job_failed_after_all_attempts() {
+        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("empty-source");
+        tokio::fs::create_dir(&source).await.unwrap();
+        let destination = temp_dir.path().join("destination.lance");
+        create_job(&store, &source, &destination, Vec::new()).await;
+
+        for expected_attempt in 1..=MAX_JOB_ATTEMPTS {
+            let claimed = store
+                .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
+                .await
+                .unwrap()
+                .remove(0);
+            assert_eq!(claimed.attempt, expected_attempt);
+
+            run_claimed_job(&store, claimed).await;
+
+            let job = store.list_jobs(TEST_JOB_LIMIT).await.unwrap().remove(0);
+            let expected_status = if expected_attempt == MAX_JOB_ATTEMPTS {
+                JobStatus::Failed
+            } else {
+                JobStatus::Queuing
+            };
+            assert_eq!(job.status, expected_status);
+            assert_eq!(job.error_reasons.len(), expected_attempt as usize);
+            let latest_error = job.error_reasons.last().unwrap();
+            assert_eq!(latest_error.attempt, expected_attempt);
+            assert!(latest_error.error_timestamp_ms > 0);
+        }
+
+        assert!(
+            store
+                .claim_jobs(TEST_JOB_LIMIT, TEST_CONVERT_LEASE_DURATION_MS)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
