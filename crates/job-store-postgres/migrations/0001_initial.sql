@@ -19,6 +19,19 @@ EXCEPTION
 END
 $migration$;
 
+DO $migration$
+BEGIN
+    CREATE TYPE job_status AS ENUM (
+        'queuing',
+        'running',
+        'succeeded',
+        'failed'
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END
+$migration$;
+
 CREATE TABLE IF NOT EXISTS jobs (
     -- Job identity and conversion request.
     creator TEXT NOT NULL,
@@ -30,14 +43,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     indices index_spec[] NOT NULL DEFAULT ARRAY[]::index_spec[],
 
     -- Job lifecycle.
-    status TEXT NOT NULL CHECK (
-        status IN (
-            'queuing',
-            'running',
-            'succeeded',
-            'failed'
-        )
-    ),
+    status job_status NOT NULL,
     creation_timestamp_ms BIGINT NOT NULL,
     update_timestamp_ms BIGINT NOT NULL,
 

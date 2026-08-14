@@ -88,6 +88,37 @@ impl TryFrom<PgIndexSpec> for IndexSpec {
     }
 }
 
+#[derive(Clone, Copy, sqlx::Type)]
+#[sqlx(type_name = "job_status", rename_all = "snake_case")]
+enum PgJobStatus {
+    Queuing,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl From<JobStatus> for PgJobStatus {
+    fn from(status: JobStatus) -> Self {
+        match status {
+            JobStatus::Queuing => Self::Queuing,
+            JobStatus::Running => Self::Running,
+            JobStatus::Succeeded => Self::Succeeded,
+            JobStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<PgJobStatus> for JobStatus {
+    fn from(status: PgJobStatus) -> Self {
+        match status {
+            PgJobStatus::Queuing => Self::Queuing,
+            PgJobStatus::Running => Self::Running,
+            PgJobStatus::Succeeded => Self::Succeeded,
+            PgJobStatus::Failed => Self::Failed,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PostgresJobStore {
     pool: PgPool,
@@ -545,7 +576,7 @@ impl JobStore for PostgresJobStore {
         )
         .bind(update.destination_uri)
         .bind(i64::from(update.attempt))
-        .bind(status.to_string())
+        .bind(PgJobStatus::from(status))
         .bind(now_ms)
         .bind(error_reasons_json)
         .bind(progress.rows_read)
@@ -622,7 +653,10 @@ fn row_to_job(row: &PgRow) -> Result<Job, StoreError> {
         destination_uri: row.try_get("destination_uri").map_err(database_error)?,
         blob_columns,
         indices,
-        status: parse_value(&row.try_get::<String, _>("status").map_err(database_error)?)?,
+        status: JobStatus::from(
+            row.try_get::<PgJobStatus, _>("status")
+                .map_err(database_error)?,
+        ),
         creation_timestamp_ms: row
             .try_get("creation_timestamp_ms")
             .map_err(database_error)?,
