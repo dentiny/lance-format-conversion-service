@@ -32,6 +32,18 @@ EXCEPTION
 END
 $migration$;
 
+DO $migration$
+BEGIN
+    CREATE TYPE job_error AS (
+        attempt BIGINT,
+        error_timestamp_ms BIGINT,
+        reason TEXT
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END
+$migration$;
+
 CREATE TABLE IF NOT EXISTS jobs (
     -- Job identity and conversion request.
     creator TEXT NOT NULL,
@@ -49,9 +61,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     -- Retry and lease state.
     attempt BIGINT NOT NULL DEFAULT 0 CHECK (attempt >= 0),
-    error_reasons_json JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (
-        jsonb_typeof(error_reasons_json) = 'array'
-    ),
+    error_reasons job_error[] NOT NULL DEFAULT ARRAY[]::job_error[],
     lease_expiration_timestamp_ms BIGINT,
 
     -- Job progress.

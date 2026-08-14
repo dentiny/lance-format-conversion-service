@@ -20,14 +20,12 @@ const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const DEFAULT_MAX_CONNECTIONS: u32 = 8;
 const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
-    error_reasons_json::text AS error_reasons_json,
-    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    error_reasons, lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
     blob_columns, indices
     FROM jobs";
 const LOAD_JOB_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt,
-    error_reasons_json::text AS error_reasons_json,
-    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    error_reasons, lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
     blob_columns, indices
     FROM jobs
     WHERE destination_uri = $1";
@@ -116,6 +114,36 @@ impl From<PgJobStatus> for JobStatus {
             PgJobStatus::Succeeded => Self::Succeeded,
             PgJobStatus::Failed => Self::Failed,
         }
+    }
+}
+
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "job_error")]
+struct PgJobError {
+    attempt: i64,
+    error_timestamp_ms: i64,
+    reason: String,
+}
+
+impl From<JobError> for PgJobError {
+    fn from(error: JobError) -> Self {
+        Self {
+            attempt: i64::from(error.attempt),
+            error_timestamp_ms: error.error_timestamp_ms,
+            reason: error.reason,
+        }
+    }
+}
+
+impl TryFrom<PgJobError> for JobError {
+    type Error = StoreError;
+
+    fn try_from(error: PgJobError) -> Result<Self, Self::Error> {
+        Ok(Self {
+            attempt: i64_to_u32(error.attempt)?,
+            error_timestamp_ms: error.error_timestamp_ms,
+            reason: error.reason,
+        })
     }
 }
 
@@ -329,13 +357,11 @@ impl JobStore for PostgresJobStore {
              SET status = 'failed',
                  update_timestamp_ms = $1,
                  lease_expiration_timestamp_ms = NULL,
-                 error_reasons_json = error_reasons_json || jsonb_build_array(
-                     jsonb_build_object(
-                         'attempt', attempt,
-                         'error_timestamp_ms', $1,
-                         'reason', 'lease expired on final attempt'
-                     )
-                 )
+                 error_reasons = error_reasons || ARRAY[(
+                     attempt,
+                     $1,
+                     'lease expired on final attempt'
+                 )::job_error]
              WHERE status = 'running'
                AND lease_expiration_timestamp_ms <= $1
                AND attempt >= $2",
@@ -376,15 +402,13 @@ impl JobStore for PostgresJobStore {
                      lease_expiration_timestamp_ms = $2,
                      attempt = attempt + 1,
                      update_timestamp_ms = $3,
-                     error_reasons_json = CASE
-                         WHEN status = 'running' THEN error_reasons_json || jsonb_build_array(
-                             jsonb_build_object(
-                                 'attempt', attempt,
-                                 'error_timestamp_ms', $3,
-                                 'reason', 'lease expired before completion'
-                             )
-                         )
-                         ELSE error_reasons_json
+                     error_reasons = CASE
+                         WHEN status = 'running' THEN error_reasons || ARRAY[(
+                             attempt,
+                             $3,
+                             'lease expired before completion'
+                         )::job_error]
+                         ELSE error_reasons
                      END
                  WHERE destination_uri = $1",
             )
@@ -552,8 +576,11 @@ impl JobStore for PostgresJobStore {
             error_timestamp_ms: now_ms,
             reason: update.reason,
         });
-        let error_reasons_json = serde_json::to_string(&job.error_reasons)
-            .map_err(|error| StoreError::Worker(error.to_string()))?;
+        let error_reasons = job
+            .error_reasons
+            .into_iter()
+            .map(PgJobError::from)
+            .collect::<Vec<_>>();
         let status = if update.attempt >= MAX_JOB_ATTEMPTS {
             JobStatus::Failed
         } else {
@@ -564,7 +591,7 @@ impl JobStore for PostgresJobStore {
             "UPDATE jobs
              SET status = $3,
                  update_timestamp_ms = $4,
-                 error_reasons_json = $5::jsonb,
+                 error_reasons = $5,
                  lease_expiration_timestamp_ms = NULL,
                  rows_read = $6,
                  rows_written = $7,
@@ -578,7 +605,7 @@ impl JobStore for PostgresJobStore {
         .bind(i64::from(update.attempt))
         .bind(PgJobStatus::from(status))
         .bind(now_ms)
-        .bind(error_reasons_json)
+        .bind(error_reasons)
         .bind(progress.rows_read)
         .bind(progress.rows_written)
         .bind(progress.rows_total)
@@ -630,11 +657,12 @@ async fn load_job(connection: &mut PgConnection, destination_uri: &str) -> Resul
 }
 
 fn row_to_job(row: &PgRow) -> Result<Job, StoreError> {
-    let error_reasons_json = row
-        .try_get::<String, _>("error_reasons_json")
-        .map_err(database_error)?;
-    let error_reasons = serde_json::from_str(&error_reasons_json)
-        .map_err(|error| StoreError::Database(error.to_string()))?;
+    let error_reasons = row
+        .try_get::<Vec<PgJobError>, _>("error_reasons")
+        .map_err(database_error)?
+        .into_iter()
+        .map(JobError::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
     let blob_columns = row
         .try_get::<Vec<PgBlobColumnSpec>, _>("blob_columns")
         .map_err(database_error)?

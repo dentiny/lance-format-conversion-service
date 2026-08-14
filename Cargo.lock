@@ -4275,7 +4275,6 @@ dependencies = [
  "lance-job-store",
  "lance-test-support",
  "pglite-oxide",
- "serde_json",
  "serial_test",
  "sqlx",
  "tokio",
