@@ -265,7 +265,9 @@ jobs.
 ## CLI
 
 `lance-convert` calls the same HTTP API. Point it at the web control plane with
-`--url` or `LANCE_API_URL` (default `http://127.0.0.1:8080`).
+`--url` or `LANCE_API_URL` (default `http://127.0.0.1:8080`). Each command has
+examples on its help page: `lance-convert --help`, `lance-convert submit --help`,
+`lance-convert list --help`, and `lance-convert status --help`.
 
 ```shell
 cargo run -p lance-convert -- submit \
