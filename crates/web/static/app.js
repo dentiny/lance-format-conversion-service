@@ -3,23 +3,8 @@
 const INDEX_TYPES = [
   ["none", "None"],
   ["scalar", "Scalar"],
-  ["b_tree", "B-tree"],
-  ["bitmap", "Bitmap"],
-  ["label_list", "Label list"],
-  ["inverted", "Inverted"],
-  ["n_gram", "N-gram"],
-  ["zone_map", "Zone map"],
-  ["bloom_filter", "Bloom filter"],
-  ["r_tree", "R-tree"],
-  ["fm", "FM"],
+  ["text", "Text"],
   ["vector", "Vector"],
-  ["ivf_flat", "IVF Flat"],
-  ["ivf_sq", "IVF SQ"],
-  ["ivf_pq", "IVF PQ"],
-  ["ivf_hnsw_sq", "IVF HNSW SQ"],
-  ["ivf_hnsw_pq", "IVF HNSW PQ"],
-  ["ivf_hnsw_flat", "IVF HNSW Flat"],
-  ["ivf_rq", "IVF RQ"],
 ];
 
 const state = {

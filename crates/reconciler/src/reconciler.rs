@@ -180,7 +180,7 @@ mod tests {
     const EXPECTED_ERROR_COUNT: usize = 1;
     const TEST_VALUES: [i64; 3] = [1, 2, 3];
     const EXPECTED_ROW_COUNT: u64 = TEST_VALUES.len() as u64;
-    const TEST_INDEX_NAME: &str = "conversion_0_b_tree_idx";
+    const TEST_INDEX_NAME: &str = "conversion_0_scalar_idx";
 
     #[tokio::test]
     async fn conversion_success_marks_job_succeeded() {
@@ -196,7 +196,7 @@ mod tests {
             &destination,
             vec![IndexSpec {
                 columns: vec!["value".to_owned()],
-                index_type: IndexType::BTree,
+                index_type: IndexType::Scalar,
             }],
         )
         .await;

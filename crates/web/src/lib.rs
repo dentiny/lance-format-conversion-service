@@ -381,7 +381,7 @@ mod tests {
                             "blob_columns":[{"column":"image"}],
                             "indices":[{
                                 "columns":["embedding"],
-                                "index_type":"ivf_hnsw_pq"
+                                "index_type":"vector"
                             }]
                         }"#,
                     ))
@@ -408,7 +408,7 @@ mod tests {
         .unwrap();
         assert_eq!(jobs[0].blob_columns[0].column, "image");
         assert_eq!(jobs[0].indices[0].columns, ["embedding"]);
-        assert_eq!(jobs[0].indices[0].index_type, IndexType::IvfHnswPq);
+        assert_eq!(jobs[0].indices[0].index_type, IndexType::Vector);
     }
 
     #[tokio::test]

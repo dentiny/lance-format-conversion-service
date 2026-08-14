@@ -49,23 +49,8 @@ string_enum!(JobStatus {
 
 string_enum!(IndexType {
     Scalar => "scalar",
-    BTree => "b_tree",
-    Bitmap => "bitmap",
-    LabelList => "label_list",
-    Inverted => "inverted",
-    NGram => "n_gram",
-    ZoneMap => "zone_map",
-    BloomFilter => "bloom_filter",
-    RTree => "r_tree",
-    Fm => "fm",
+    Text => "text",
     Vector => "vector",
-    IvfFlat => "ivf_flat",
-    IvfSq => "ivf_sq",
-    IvfPq => "ivf_pq",
-    IvfHnswSq => "ivf_hnsw_sq",
-    IvfHnswPq => "ivf_hnsw_pq",
-    IvfHnswFlat => "ivf_hnsw_flat",
-    IvfRq => "ivf_rq",
 });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,23 +144,8 @@ mod tests {
     fn index_types_use_snake_case_json_names() {
         let cases = [
             (IndexType::Scalar, "scalar"),
-            (IndexType::BTree, "b_tree"),
-            (IndexType::Bitmap, "bitmap"),
-            (IndexType::LabelList, "label_list"),
-            (IndexType::Inverted, "inverted"),
-            (IndexType::NGram, "n_gram"),
-            (IndexType::ZoneMap, "zone_map"),
-            (IndexType::BloomFilter, "bloom_filter"),
-            (IndexType::RTree, "r_tree"),
-            (IndexType::Fm, "fm"),
+            (IndexType::Text, "text"),
             (IndexType::Vector, "vector"),
-            (IndexType::IvfFlat, "ivf_flat"),
-            (IndexType::IvfSq, "ivf_sq"),
-            (IndexType::IvfPq, "ivf_pq"),
-            (IndexType::IvfHnswSq, "ivf_hnsw_sq"),
-            (IndexType::IvfHnswPq, "ivf_hnsw_pq"),
-            (IndexType::IvfHnswFlat, "ivf_hnsw_flat"),
-            (IndexType::IvfRq, "ivf_rq"),
         ];
 
         for (index_type, expected) in cases {

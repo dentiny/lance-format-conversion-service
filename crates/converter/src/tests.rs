@@ -297,7 +297,7 @@ async fn assert_blob_storage(payload_size: Option<usize>, expected_kind: Option<
 }
 
 #[tokio::test]
-async fn creates_requested_scalar_indexes() {
+async fn creates_requested_scalar_and_text_indexes() {
     let temp_dir = TempDir::new().unwrap();
     let source = temp_dir.path().join("source");
     let destination = temp_dir.path().join("dataset.lance");
@@ -322,11 +322,11 @@ async fn creates_requested_scalar_indexes() {
     job.indices = vec![
         IndexSpec {
             columns: vec!["id".to_owned()],
-            index_type: IndexType::BTree,
+            index_type: IndexType::Scalar,
         },
         IndexSpec {
             columns: vec!["text".to_owned()],
-            index_type: IndexType::NGram,
+            index_type: IndexType::Text,
         },
     ];
     Converter::new(test_config())
@@ -343,12 +343,12 @@ async fn creates_requested_scalar_indexes() {
     assert!(
         indexes
             .iter()
-            .any(|index| index.name == "conversion_0_b_tree_idx")
+            .any(|index| index.name == "conversion_0_scalar_idx")
     );
     assert!(
         indexes
             .iter()
-            .any(|index| index.name == "conversion_1_n_gram_idx")
+            .any(|index| index.name == "conversion_1_text_idx")
     );
 }
 

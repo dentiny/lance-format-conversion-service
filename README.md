@@ -209,7 +209,7 @@ curl -X POST http://127.0.0.1:8080/v1/jobs \
     "kind":"copy",
     "destination_uri":"s3://destination-bucket/datasets/images.lance",
     "blob_columns":[{"column":"image_url"}],
-    "indices":[{"columns":["label"],"index_type":"bitmap"}]
+    "indices":[{"columns":["label"],"index_type":"scalar"}]
   }'
 ```
 
