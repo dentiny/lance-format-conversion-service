@@ -99,24 +99,24 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 -- Query pattern: claim the oldest queuing jobs in creation order.
-CREATE INDEX IF NOT EXISTS jobs_queuing_idx
+CREATE INDEX IF NOT EXISTS jobs_queuing_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'queuing';
 
 -- Query pattern: reclaim running jobs whose lease has expired.
-CREATE INDEX IF NOT EXISTS jobs_expired_running_idx
+CREATE INDEX IF NOT EXISTS jobs_expired_running_index
     ON jobs(lease_expiration_timestamp_ms)
     WHERE status = 'running';
 
 -- Query pattern: filter jobs by creator.
-CREATE INDEX IF NOT EXISTS jobs_creator_idx
+CREATE INDEX IF NOT EXISTS jobs_creator_index
     ON jobs(creator);
 
 -- Query pattern: list all jobs from newest to oldest.
-CREATE INDEX IF NOT EXISTS jobs_creation_idx
+CREATE INDEX IF NOT EXISTS jobs_creation_index
     ON jobs(creation_timestamp_ms);
 
 -- Query pattern: list failed jobs from newest to oldest.
-CREATE INDEX IF NOT EXISTS jobs_failed_idx
+CREATE INDEX IF NOT EXISTS jobs_failed_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'failed';
