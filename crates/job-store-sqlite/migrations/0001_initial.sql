@@ -55,11 +55,6 @@ CREATE INDEX jobs_queuing_index
     ON jobs(creation_timestamp_ms)
     WHERE status = 'queuing';
 
--- Query pattern: reclaim running jobs whose lease has expired.
-CREATE INDEX jobs_expired_running_index
-    ON jobs(lease_expiration_timestamp_ms)
-    WHERE status = 'running';
-
 -- Query pattern: filter jobs by creator.
 CREATE INDEX jobs_creator_index
     ON jobs(creator);
