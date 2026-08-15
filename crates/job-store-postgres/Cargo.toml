@@ -17,7 +17,7 @@ test-utils = ["dep:pglite-oxide"]
 async-trait.workspace = true
 lance-conversion-core.workspace = true
 lance-job-store.workspace = true
-sqlx = { workspace = true, features = ["postgres", "derive"] }
+sqlx = { workspace = true, features = ["postgres", "derive", "tls-rustls-ring-native-roots"] }
 # Bundled PGlite 17.5. Keep Cargo.lock's virtual-net at 0.702.0-alpha.3;
 # wasmer-wasix 0.702.0-alpha.3 does not compile against virtual-net 0.702.1.
 pglite-oxide = { version = "0.5", optional = true, default-features = false, features = ["bundled"] }
