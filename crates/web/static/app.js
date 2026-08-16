@@ -14,6 +14,7 @@ const state = {
   jobsQuery: "",
   expandedJobs: new Set(),
   inspectController: null,
+  hfHydratedFrom: "",
 };
 
 const elements = {};
@@ -23,6 +24,11 @@ function cacheElements() {
   elements.form = document.querySelector("#job-form");
   elements.creator = document.querySelector("#creator");
   elements.source = document.querySelector("#source-uri");
+  elements.sourceHelp = document.querySelector("#source-help");
+  elements.hfSourceFields = document.querySelector("#hf-source-fields");
+  elements.hfConfig = document.querySelector("#hf-config");
+  elements.hfSplit = document.querySelector("#hf-split");
+  elements.hfRevision = document.querySelector("#hf-revision");
   elements.destination = document.querySelector("#destination-uri");
   elements.inspectButton = document.querySelector("#inspect-button");
   elements.submitButton = document.querySelector("#submit-button");
@@ -75,9 +81,122 @@ async function responseError(response) {
   }
 }
 
-// Invalidates schema-derived controls when the source URI changes.
+// Returns owner/name for an hf:// or huggingface.co dataset URI.
+function huggingfaceDatasetPath(value) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.toLowerCase().startsWith("hf://")) {
+    try {
+      const url = new URL(trimmed);
+      if (url.hostname !== "datasets") {
+        return null;
+      }
+      const path = url.pathname.replace(/^\/+|\/+$/g, "").split("@")[0];
+      const parts = path.split("/").filter(Boolean);
+      return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+  const hub = trimmed.match(
+    /^(?:https?:\/\/)?(?:www\.)?huggingface\.co\/datasets\/([^/?#]+\/[^/?#]+)/i,
+  );
+  return hub ? hub[1] : null;
+}
+
+function isHfSource(value) {
+  return huggingfaceDatasetPath(value) !== null;
+}
+
+// Reads revision, config, and split from a full hf:// URI.
+function parseHfFields(value) {
+  const parsed = { revision: "main", config: "", split: "" };
+  const trimmed = value.trim();
+  if (!trimmed.toLowerCase().startsWith("hf://")) {
+    return parsed;
+  }
+  try {
+    const url = new URL(trimmed);
+    const path = url.pathname.replace(/^\/+|\/+$/g, "");
+    const at = path.lastIndexOf("@");
+    if (at !== -1 && path.slice(at + 1)) {
+      parsed.revision = path.slice(at + 1);
+    }
+    parsed.config = url.searchParams.get("config") || "";
+    parsed.split = url.searchParams.get("split") || "";
+  } catch (_error) {
+    return parsed;
+  }
+  return parsed;
+}
+
+// Builds the inspect/submit URI, adding HF query fields when present.
+function composeSourceUri() {
+  const raw = elements.source.value.trim();
+  const dataset = huggingfaceDatasetPath(raw);
+  if (!dataset) {
+    return raw;
+  }
+  const revision = (elements.hfRevision && elements.hfRevision.value.trim()) || "main";
+  const config = elements.hfConfig ? elements.hfConfig.value.trim() : "";
+  const split = elements.hfSplit ? elements.hfSplit.value.trim() : "";
+  const params = new URLSearchParams();
+  if (config) {
+    params.set("config", config);
+  }
+  if (split) {
+    params.set("split", split);
+  }
+  const query = params.toString();
+  return `hf://datasets/${dataset}@${revision}${query ? `?${query}` : ""}`;
+}
+
+// Copies @revision / query params from the source URI into the HF fields.
+function syncHfFieldsFromSource() {
+  if (!elements.hfConfig || !elements.hfSplit || !elements.hfRevision) {
+    return;
+  }
+  const raw = elements.source.value.trim();
+  if (!isHfSource(raw) || state.hfHydratedFrom === raw) {
+    return;
+  }
+  state.hfHydratedFrom = raw;
+  if (!raw.toLowerCase().startsWith("hf://") || (!raw.includes("@") && !raw.includes("?"))) {
+    return;
+  }
+  const parsed = parseHfFields(raw);
+  if (raw.includes("@")) {
+    elements.hfRevision.value = parsed.revision;
+  }
+  if (/(?:[?&])config=/.test(raw)) {
+    elements.hfConfig.value = parsed.config;
+  }
+  if (/(?:[?&])split=/.test(raw)) {
+    elements.hfSplit.value = parsed.split;
+  }
+}
+
+// Shows HF config/split/revision only for Hugging Face sources.
+function updateHfFields() {
+  const detected = isHfSource(elements.source.value);
+  if (elements.hfSourceFields) {
+    elements.hfSourceFields.hidden = !detected;
+  }
+  if (elements.sourceHelp) {
+    elements.sourceHelp.textContent = detected
+      ? "Hugging Face dataset detected. Set config, split, and revision, then inspect."
+      : "Supported location schemes depend on service configuration.";
+  }
+  syncHfFieldsFromSource();
+}
+
+// Invalidates schema-derived controls when the composed source URI changes.
 function updateSourceInspection() {
-  if (state.inspectedSource && state.inspectedSource !== elements.source.value.trim()) {
+  updateHfFields();
+  const composed = composeSourceUri();
+  if (state.inspectedSource && state.inspectedSource !== composed) {
     state.inspectedSource = "";
     state.fields = [];
     elements.schemaBody.replaceChildren();
@@ -191,7 +310,7 @@ function updateSelectionSummary() {
 
 // Inspects the current source and displays its schema.
 async function inspectSchema() {
-  const sourceUri = elements.source.value.trim();
+  const sourceUri = composeSourceUri();
   if (!sourceUri) {
     elements.source.reportValidity();
     return;
@@ -279,14 +398,15 @@ async function submitJob(event) {
   if (!elements.form.reportValidity()) {
     return;
   }
-  if (state.inspectedSource !== elements.source.value.trim()) {
+  const sourceUri = composeSourceUri();
+  if (state.inspectedSource !== sourceUri) {
     showFormMessage("Inspect the current source schema before creating the job.", true);
     return;
   }
 
   const payload = {
     creator: elements.creator.value.trim(),
-    source_uri: elements.source.value.trim(),
+    source_uri: sourceUri,
     destination_uri: elements.destination.value.trim(),
     blob_columns: collectBlobColumns(),
     indices: collectIndices(),
@@ -730,6 +850,15 @@ function initialize() {
   cacheElements();
   if (elements.form) {
     elements.source.addEventListener("input", updateSourceInspection);
+    if (elements.hfConfig) {
+      elements.hfConfig.addEventListener("input", updateSourceInspection);
+    }
+    if (elements.hfSplit) {
+      elements.hfSplit.addEventListener("input", updateSourceInspection);
+    }
+    if (elements.hfRevision) {
+      elements.hfRevision.addEventListener("input", updateSourceInspection);
+    }
     elements.inspectButton.addEventListener("click", inspectSchema);
     elements.form.addEventListener("submit", submitJob);
     updateSourceInspection();
