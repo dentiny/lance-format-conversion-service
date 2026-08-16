@@ -55,6 +55,23 @@
                 <button id="inspect-button" class="button button-secondary" type="button">Inspect schema</button>
               </div>
               <small id="source-help" class="field-help">Supported location schemes depend on service configuration.</small>
+              <div class="storage-options" id="hf-source-fields" hidden>
+                <div class="storage-option-grid">
+                  <div class="storage-option">
+                    <label for="hf-config">Config</label>
+                    <input id="hf-config" name="hf_config" type="text" spellcheck="false" placeholder="e.g. data-v1.1" autocomplete="off">
+                  </div>
+                  <div class="storage-option">
+                    <label for="hf-split">Split</label>
+                    <input id="hf-split" name="hf_split" type="text" spellcheck="false" placeholder="e.g. train" autocomplete="off">
+                  </div>
+                  <div class="storage-option">
+                    <label for="hf-revision">Revision</label>
+                    <input id="hf-revision" name="hf_revision" type="text" spellcheck="false" placeholder="main" value="main" autocomplete="off">
+                  </div>
+                </div>
+                <p class="storage-help">Config is the dataset subset. Split is train, test, validation, or another named split. Revision is the branch, tag, or commit (default main).</p>
+              </div>
             </div>
 
             <div class="field field-wide">
