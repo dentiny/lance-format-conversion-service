@@ -16,13 +16,18 @@ postgres = ["lance-job-store-factory/postgres"]
 sqlite = ["lance-job-store-factory/sqlite"]
 
 [dependencies]
+axum.workspace = true
 clap.workspace = true
 lance-conversion-core.workspace = true
 lance-converter.workspace = true
 lance-job-store.workspace = true
 lance-job-store-factory.workspace = true
+serde.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+pprof = { version = "0.15.0", features = ["flamegraph"] }
 
 [dev-dependencies]
 arrow.workspace = true

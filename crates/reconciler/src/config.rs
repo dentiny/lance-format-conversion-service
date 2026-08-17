@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
 use clap::Parser;
@@ -63,6 +64,10 @@ pub struct Config {
     /// Blob V2 dedicated-file payload threshold in MiB.
     #[arg(long, default_value_t = DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB)]
     pub blob_dedicated_threshold_mib: NonZeroU64,
+    /// If set, serve request-triggered CPU pprof. Sampling starts only when a
+    /// `/debug/pprof/cpu/flamegraph` request arrives.
+    #[arg(long, env = "PPROF_LISTEN_ADDRESS")]
+    pub pprof_listen_address: Option<SocketAddr>,
 }
 
 impl Config {
@@ -119,6 +124,7 @@ impl Default for Config {
             target_lance_file_size_mib: DEFAULT_TARGET_LANCE_FILE_SIZE_MIB,
             blob_inline_threshold_mib: DEFAULT_BLOB_INLINE_THRESHOLD_MIB,
             blob_dedicated_threshold_mib: DEFAULT_BLOB_DEDICATED_THRESHOLD_MIB,
+            pprof_listen_address: None,
         }
     }
 }
@@ -157,5 +163,6 @@ mod tests {
         assert_eq!(config.database_url, "sqlite://./data/service.db");
         assert_eq!(config.worker_count.get(), 4);
         assert_eq!(config.poll_interval_ms.get(), 500);
+        assert_eq!(config.pprof_listen_address, None);
     }
 }

@@ -109,6 +109,14 @@ Run `lance-reconciler --help` for the full list.
 - `--target-lance-file-size-mib` — default `512`
 - `--blob-inline-threshold-mib` — default `2`
 - `--blob-dedicated-threshold-mib` — default `32`
+- `--pprof-listen-address` / `PPROF_LISTEN_ADDRESS` — optional. If set, serve
+  request-triggered CPU pprof. No samples are collected until a request hits
+  `/debug/pprof/cpu/flamegraph`.
+
+```shell
+curl -o cpu-flamegraph.svg \
+  'http://127.0.0.1:6060/debug/pprof/cpu/flamegraph?seconds=30'
+```
 
 Run it from the workspace root:
 

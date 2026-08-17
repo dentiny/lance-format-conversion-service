@@ -314,7 +314,7 @@ mod tests {
 
     use axum::{
         body::{Body, to_bytes},
-        http::{Request, StatusCode, header},
+        http::{HeaderValue, Request, StatusCode, header},
         response::IntoResponse,
     };
     use serial_test::serial;
@@ -388,7 +388,7 @@ mod tests {
             response
                 .headers()
                 .get(header::CACHE_CONTROL)
-                .map(|value| value.as_bytes()),
+                .map(HeaderValue::as_bytes),
             Some(b"no-store".as_slice()),
             "{backend}"
         );
@@ -420,7 +420,7 @@ mod tests {
             response
                 .headers()
                 .get(header::CACHE_CONTROL)
-                .map(|value| value.as_bytes()),
+                .map(HeaderValue::as_bytes),
             Some(b"no-store".as_slice())
         );
         let js_bytes = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)

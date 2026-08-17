@@ -117,8 +117,8 @@ its conversion workers in one process. `lance-convert` is a client; it talks to
 - Add a reconciliation task that cleans up terminal jobs after configurable
   age and retained-count thresholds. MVP records are retained indefinitely;
   running and queuing jobs must never be removed by retention cleanup.
-- In the final production-hardening milestone, add structured tracing,
-  `jemalloc`, and request-triggered CPU and memory profiling.
+- In the final production-hardening milestone, add structured tracing and
+  `jemalloc` heap profiling.
 
 SQLite is available behind the `sqlite` Cargo feature. SQLite deployments must
 run web and reconciler in the same pod or on the same host, backed by one
