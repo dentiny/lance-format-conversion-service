@@ -8,8 +8,7 @@ use crate::{
     ConversionError, ConversionProgress, ConverterConfig, blob,
     config::ByteConfig,
     indexes,
-    source::{self, StorageBackend},
-    validation,
+    source, validation,
 };
 
 pub struct Converter {
