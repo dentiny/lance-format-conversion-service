@@ -5,9 +5,7 @@ use lance_conversion_core::job::{Job, JobProgress};
 use lance_file::version::LanceFileVersion;
 
 use crate::{
-    ConversionError, ConversionProgress, ConverterConfig, blob,
-    config::ByteConfig,
-    indexes,
+    ConversionError, ConversionProgress, ConverterConfig, blob, config::ByteConfig, indexes,
     source, validation,
 };
 

@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
 
 pub mod config;
 
@@ -30,6 +32,7 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 const JOBS_HTML: &str = include_str!("../static/jobs.html");
 const APP_CSS: &str = include_str!("../static/app.css");
 const APP_JS: &str = include_str!("../static/app.js");
+const NO_STORE: HeaderValue = HeaderValue::from_static("no-store");
 
 #[derive(Clone)]
 struct AppState {
@@ -50,26 +53,80 @@ pub fn router(store: Arc<dyn JobStore>) -> Router {
 }
 
 /// Serves the embedded MVP application shell.
-async fn index_page() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index_page() -> impl IntoResponse {
+    html_page(INDEX_HTML)
 }
 
 /// Serves the conversion job monitoring page.
-async fn jobs_page() -> Html<&'static str> {
-    Html(JOBS_HTML)
+async fn jobs_page() -> impl IntoResponse {
+    html_page(JOBS_HTML)
 }
 
 /// Serves the embedded application stylesheet.
 async fn stylesheet() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
+    static_asset("text/css; charset=utf-8", APP_CSS)
 }
 
 /// Serves the embedded application JavaScript.
 async fn javascript() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        APP_JS,
+    static_asset("text/javascript; charset=utf-8", APP_JS)
+}
+
+fn content_token(body: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn css_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| content_token(APP_CSS))
+}
+
+fn js_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| content_token(APP_JS))
+}
+
+fn with_asset_tokens(html: &str) -> String {
+    html.replace(
+        "href=\"/app.css\"",
+        &format!("href=\"/app.css?v={}\"", css_token()),
     )
+    .replace(
+        "href=\"app.css\"",
+        &format!("href=\"/app.css?v={}\"", css_token()),
+    )
+    .replace(
+        "src=\"/app.js\"",
+        &format!("src=\"/app.js?v={}\"", js_token()),
+    )
+    .replace(
+        "src=\"app.js\"",
+        &format!("src=\"/app.js?v={}\"", js_token()),
+    )
+}
+
+fn no_store(content_type: &'static str) -> [(header::HeaderName, HeaderValue); 3] {
+    [
+        (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
+        (header::CACHE_CONTROL, NO_STORE),
+        (
+            header::HeaderName::from_static("cdn-cache-control"),
+            NO_STORE,
+        ),
+    ]
+}
+
+fn html_page(html: &'static str) -> impl IntoResponse {
+    (
+        no_store("text/html; charset=utf-8"),
+        Html(with_asset_tokens(html)),
+    )
+}
+
+fn static_asset(content_type: &'static str, body: &'static str) -> impl IntoResponse {
+    (no_store(content_type), body)
 }
 
 #[derive(Debug, Serialize)]
@@ -327,13 +384,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{backend}");
-        let body = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
-            .await
-            .unwrap();
-        assert!(
-            String::from_utf8_lossy(&body).contains("Conversion jobs"),
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .map(|value| value.as_bytes()),
+            Some(b"no-store".as_slice()),
             "{backend}"
         );
+        let page_bytes = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        let page = String::from_utf8_lossy(&page_bytes);
+        assert!(page.contains("Conversion jobs"), "{backend}");
+        assert!(
+            page.contains(&format!("/app.js?v={}", crate::js_token())),
+            "{backend}"
+        );
+    }
+
+    #[tokio::test]
+    async fn javascript_is_not_cacheable() {
+        let store = Arc::new(SqliteJobStore::open(":memory:").await.unwrap());
+        let response = router(store)
+            .oneshot(
+                Request::builder()
+                    .uri("/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .map(|value| value.as_bytes()),
+            Some(b"no-store".as_slice())
+        );
+        let js_bytes = to_bytes(response.into_body(), TEST_RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&js_bytes).contains("setInterval"));
     }
 
     #[tokio::test]
