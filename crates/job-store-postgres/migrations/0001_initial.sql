@@ -25,7 +25,8 @@ CREATE TYPE job_error AS (
 CREATE TYPE job_progress AS (
     rows_read BIGINT,
     rows_written BIGINT,
-    rows_total BIGINT
+    rows_total BIGINT,
+    rows_missing_blobs BIGINT
 );
 
 CREATE TABLE jobs (
@@ -49,7 +50,7 @@ CREATE TABLE jobs (
     lease_expiration_timestamp_ms BIGINT,
 
     -- Job progress.
-    progress job_progress NOT NULL DEFAULT (0, 0, 0)::job_progress,
+    progress job_progress NOT NULL DEFAULT (0, 0, 0, 0)::job_progress,
 
     -- Cross-column invariants.
     CHECK (
@@ -60,12 +61,14 @@ CREATE TABLE jobs (
         (progress).rows_read >= 0
         AND (progress).rows_written >= 0
         AND (progress).rows_total >= 0
+        AND (progress).rows_missing_blobs >= 0
     ),
     CHECK (
         (progress).rows_total = 0
         OR (
             (progress).rows_read <= (progress).rows_total
             AND (progress).rows_written <= (progress).rows_total
+            AND (progress).rows_missing_blobs <= (progress).rows_total
         )
     )
 );

@@ -54,9 +54,12 @@ the folder that contains the shards, not at a single file.
 ### Schema, blobs, and indexes
 
 - Inspect the source Arrow schema before enqueueing a conversion.
-- Select URL columns for Blob V2 ingestion. Lance fetches the referenced bytes
-  and stores each value inline, packed, or in a dedicated blob file according
-  to the configured thresholds.
+- Select URL columns for Blob V2 ingestion. The converter fetches each HTTP
+  blob value; Lance fetches other supported URIs and stores each value inline,
+  packed, or in a dedicated blob file according to the configured thresholds.
+- When any configured HTTP blob in a source row returns `404 Not Found` or
+  `410 Gone`, skip the entire row and increment the missing-blob row counter.
+  Other HTTP failures fail the conversion job.
 - Create scalar, full-text, and vector Lance indexes after ingestion.
 - Validate unsupported Arrow types and selected blob columns before writing.
 - Verify the destination row count before marking a job as successful.
@@ -77,7 +80,8 @@ the folder that contains the shards, not at a single file.
 - Schedule conversions from an embedded, dependency-free web interface.
 - Configure blob columns and indexes from the inspected schema.
 - Monitor queued, running, successful, and failed jobs on a dedicated page.
-- View rows read, rows written, total rows, attempts, timestamps, and errors.
+- View rows read, rows written, total rows, missing-blob rows, attempts,
+  timestamps, and errors.
 - Use the same functionality through the Axum JSON API or the `lance-convert`
   CLI.
 

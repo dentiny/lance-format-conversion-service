@@ -2,7 +2,6 @@ mod blob;
 mod config;
 mod converter;
 mod error;
-mod http_store;
 mod indexes;
 mod inspection;
 mod progress;

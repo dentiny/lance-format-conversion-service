@@ -17,12 +17,12 @@ const INDICES_JSON_COLUMN: &str = "indices_json";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SELECT_JOBS_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
-    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total, rows_missing_blobs,
     blob_columns_json, indices_json
     FROM jobs";
 const LOAD_JOB_SQL: &str = "SELECT creator, source_uri, destination_uri,
     status, creation_timestamp_ms, update_timestamp_ms, attempt, error_reasons_json,
-    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total,
+    lease_expiration_timestamp_ms, rows_read, rows_written, rows_total, rows_missing_blobs,
     blob_columns_json, indices_json
     FROM jobs
     WHERE destination_uri = ?1";
@@ -32,6 +32,7 @@ struct SqlProgress {
     rows_read: i64,
     rows_written: i64,
     rows_total: i64,
+    rows_missing_blobs: i64,
 }
 
 #[derive(Clone)]
@@ -307,7 +308,8 @@ impl JobStore for SqliteJobStore {
                  update_timestamp_ms = ?4,
                  rows_read = ?5,
                  rows_written = ?6,
-                 rows_total = ?7
+                 rows_total = ?7,
+                 rows_missing_blobs = ?8
              WHERE destination_uri = ?1
                AND status = 'running'
                AND attempt = ?2
@@ -320,6 +322,7 @@ impl JobStore for SqliteJobStore {
         .bind(progress.rows_read)
         .bind(progress.rows_written)
         .bind(progress.rows_total)
+        .bind(progress.rows_missing_blobs)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -349,7 +352,8 @@ impl JobStore for SqliteJobStore {
              SET update_timestamp_ms = ?3,
                  rows_read = ?4,
                  rows_written = ?5,
-                 rows_total = ?6
+                 rows_total = ?6,
+                 rows_missing_blobs = ?7
              WHERE destination_uri = ?1
                AND status = 'running'
                AND attempt = ?2
@@ -361,6 +365,7 @@ impl JobStore for SqliteJobStore {
         .bind(progress.rows_read)
         .bind(progress.rows_written)
         .bind(progress.rows_total)
+        .bind(progress.rows_missing_blobs)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -392,7 +397,8 @@ impl JobStore for SqliteJobStore {
                  lease_expiration_timestamp_ms = NULL,
                  rows_read = ?4,
                  rows_written = ?5,
-                 rows_total = ?6
+                 rows_total = ?6,
+                 rows_missing_blobs = ?7
              WHERE destination_uri = ?1
                AND status = 'running'
                AND attempt = ?2
@@ -404,6 +410,7 @@ impl JobStore for SqliteJobStore {
         .bind(progress.rows_read)
         .bind(progress.rows_written)
         .bind(progress.rows_total)
+        .bind(progress.rows_missing_blobs)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -446,7 +453,8 @@ impl JobStore for SqliteJobStore {
                  lease_expiration_timestamp_ms = NULL,
                  rows_read = ?6,
                  rows_written = ?7,
-                 rows_total = ?8
+                 rows_total = ?8,
+                 rows_missing_blobs = ?9
              WHERE destination_uri = ?1
                AND status = 'running'
                AND attempt = ?2
@@ -460,6 +468,7 @@ impl JobStore for SqliteJobStore {
         .bind(progress.rows_read)
         .bind(progress.rows_written)
         .bind(progress.rows_total)
+        .bind(progress.rows_missing_blobs)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -488,10 +497,12 @@ async fn validate_progress_update(
         return Err(StoreError::LeaseLost);
     }
     if incoming.rows_total > 0
-        && (incoming.rows_read > incoming.rows_total || incoming.rows_written > incoming.rows_total)
+        && (incoming.rows_read > incoming.rows_total
+            || incoming.rows_written > incoming.rows_total
+            || incoming.rows_missing_blobs > incoming.rows_total)
     {
         return Err(StoreError::InvalidInput(
-            "read or written rows exceed total rows".to_owned(),
+            "read, written, or missing-blob rows exceed total rows".to_owned(),
         ));
     }
     Ok(job)
@@ -541,6 +552,9 @@ fn row_to_job(row: &SqliteRow) -> Result<Job, StoreError> {
             rows_read: i64_to_u64(row.try_get("rows_read").map_err(database_error)?)?,
             rows_written: i64_to_u64(row.try_get("rows_written").map_err(database_error)?)?,
             rows_total: i64_to_u64(row.try_get("rows_total").map_err(database_error)?)?,
+            rows_missing_blobs: i64_to_u64(
+                row.try_get("rows_missing_blobs").map_err(database_error)?,
+            )?,
         },
     })
 }
@@ -578,6 +592,7 @@ fn progress_as_i64(progress: JobProgress) -> Result<SqlProgress, StoreError> {
         rows_read: u64_as_i64(progress.rows_read)?,
         rows_written: u64_as_i64(progress.rows_written)?,
         rows_total: u64_as_i64(progress.rows_total)?,
+        rows_missing_blobs: u64_as_i64(progress.rows_missing_blobs)?,
     })
 }
 

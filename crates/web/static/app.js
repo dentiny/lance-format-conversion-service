@@ -504,6 +504,7 @@ function createProgressCell(job) {
   const read = Number(progress.rows_read) || 0;
   const written = Number(progress.rows_written) || 0;
   const total = Number(progress.rows_total) || 0;
+  const missingBlobs = Number(progress.rows_missing_blobs) || 0;
   const track = makeElement("div", "progress-track");
   const bar = makeElement("div", "progress-bar");
   const percent = progressPercent(job);
@@ -515,7 +516,11 @@ function createProgressCell(job) {
   track.setAttribute("aria-valuenow", String(total ? Math.max(read, written) : percent));
   track.append(bar);
   cell.append(track);
-  cell.append(makeElement("span", "progress-label", `${read.toLocaleString()} read · ${written.toLocaleString()} written · ${total.toLocaleString()} total`));
+  cell.append(makeElement(
+    "span",
+    "progress-label",
+    `${read.toLocaleString()} read · ${written.toLocaleString()} written · ${missingBlobs.toLocaleString()} missing-blob rows · ${total.toLocaleString()} total`,
+  ));
   return cell;
 }
 
@@ -584,9 +589,11 @@ function createJobDetailsRow(job, rowId) {
   const indices = Array.isArray(job.indices)
     ? job.indices.map((spec) => `${spec.index_type} · ${spec.column}`)
     : [];
+  const missingBlobRows = Number(job.progress?.rows_missing_blobs) || 0;
   content.append(
     createSpecGroup("Blob columns", blobs),
     createSpecGroup("Indexes", indices),
+    createSpecGroup("Missing blob rows", [String(missingBlobRows)]),
   );
   cell.append(content);
   row.append(cell);

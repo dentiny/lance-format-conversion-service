@@ -72,7 +72,7 @@ pub(crate) fn validate_blob_columns(
         };
         if !is_blob_eligible(field.data_type()) {
             return Err(ConversionError::InvalidBlobSpec(format!(
-                "selected column '{}' must have type Utf8 or LargeUtf8, found {}",
+                "selected column '{}' must have type Utf8, LargeUtf8, or Utf8View, found {}",
                 spec.column,
                 field.data_type()
             )));
@@ -85,15 +85,15 @@ pub(crate) fn validate_blob_uri(
     value: &str,
     column_name: &str,
     row: usize,
-) -> Result<(), DataFusionError> {
+) -> Result<reqwest::Url, DataFusionError> {
     let url = reqwest::Url::parse(value).map_err(|error| {
         DataFusionError::Execution(format!(
             "blob column '{column_name}' row {row} is not a valid absolute URL: {error}"
         ))
     })?;
     match url.scheme() {
-        "file" if url.path().starts_with('/') => Ok(()),
-        "s3" | "http" | "https" if url.host_str().is_some() => Ok(()),
+        "file" if url.path().starts_with('/') => Ok(url),
+        "s3" | "http" | "https" if url.host_str().is_some() => Ok(url),
         "file" => Err(DataFusionError::Execution(format!(
             "blob column '{column_name}' row {row} must use an absolute file URL"
         ))),
@@ -210,7 +210,7 @@ mod tests {
         ));
         assert!(matches!(
             validate_blob_columns(&fields, &[spec("number")]),
-            Err(ConversionError::InvalidBlobSpec(message)) if message.contains("Utf8 or LargeUtf8")
+            Err(ConversionError::InvalidBlobSpec(message)) if message.contains("Utf8View")
         ));
     }
 }

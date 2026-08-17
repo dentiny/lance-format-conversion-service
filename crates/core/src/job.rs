@@ -97,6 +97,7 @@ pub struct JobProgress {
     pub rows_read: u64,
     pub rows_written: u64,
     pub rows_total: u64,
+    pub rows_missing_blobs: u64,
 }
 
 #[derive(Debug, Clone)]

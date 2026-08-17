@@ -43,7 +43,6 @@ lance-job-store-sqlite = { path = "crates/job-store-sqlite" }
 lance-test-support = { path = "crates/test-support" }
 lance-file = { git = "https://github.com/lance-format/lance", branch = "main", default-features = false }
 lance-index = { git = "https://github.com/lance-format/lance", branch = "main", default-features = false }
-lance-io = { git = "https://github.com/lance-format/lance", branch = "main", default-features = false }
 lance-linalg = { git = "https://github.com/lance-format/lance", branch = "main", default-features = false }
 object_store = { version = "0.13", default-features = false, features = ["aws", "http"] }
 parquet = { version = "58", default-features = false, features = ["arrow", "async", "brotli", "flate2-zlib-rs", "lz4", "object_store", "snap", "variant_experimental", "zstd"] }

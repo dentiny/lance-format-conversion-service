@@ -120,6 +120,7 @@ pub(super) struct PgJobProgress {
     rows_read: i64,
     rows_written: i64,
     rows_total: i64,
+    rows_missing_blobs: i64,
 }
 
 impl TryFrom<JobProgress> for PgJobProgress {
@@ -130,6 +131,7 @@ impl TryFrom<JobProgress> for PgJobProgress {
             rows_read: u64_as_i64(progress.rows_read)?,
             rows_written: u64_as_i64(progress.rows_written)?,
             rows_total: u64_as_i64(progress.rows_total)?,
+            rows_missing_blobs: u64_as_i64(progress.rows_missing_blobs)?,
         })
     }
 }
@@ -142,6 +144,7 @@ impl TryFrom<PgJobProgress> for JobProgress {
             rows_read: i64_to_u64(progress.rows_read)?,
             rows_written: i64_to_u64(progress.rows_written)?,
             rows_total: i64_to_u64(progress.rows_total)?,
+            rows_missing_blobs: i64_to_u64(progress.rows_missing_blobs)?,
         })
     }
 }

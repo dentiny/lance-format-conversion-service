@@ -38,6 +38,7 @@ CREATE TABLE jobs (
     rows_read INTEGER NOT NULL DEFAULT 0 CHECK (rows_read >= 0),
     rows_written INTEGER NOT NULL DEFAULT 0 CHECK (rows_written >= 0),
     rows_total INTEGER NOT NULL DEFAULT 0 CHECK (rows_total >= 0),
+    rows_missing_blobs INTEGER NOT NULL DEFAULT 0 CHECK (rows_missing_blobs >= 0),
 
     -- Cross-column invariants.
     CHECK (
@@ -46,7 +47,11 @@ CREATE TABLE jobs (
     ),
     CHECK (
         rows_total = 0
-        OR (rows_read <= rows_total AND rows_written <= rows_total)
+        OR (
+            rows_read <= rows_total
+            AND rows_written <= rows_total
+            AND rows_missing_blobs <= rows_total
+        )
     )
 ) STRICT;
 

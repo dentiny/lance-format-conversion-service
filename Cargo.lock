@@ -4069,12 +4069,13 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "async-trait",
+ "axum",
+ "bytes",
  "futures",
  "lance",
  "lance-conversion-core",
  "lance-file",
  "lance-index",
- "lance-io",
  "lance-linalg",
  "lance-test-support",
  "object_store",
@@ -4085,7 +4086,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "url",
 ]
 
 [[package]]

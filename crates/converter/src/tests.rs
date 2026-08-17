@@ -7,6 +7,7 @@ use arrow::{
     },
     datatypes::{DataType, Field, Schema},
 };
+use axum::{Router, body::Body, routing::get};
 use futures::TryStreamExt;
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_conversion_core::job::{BlobColumnSpec, IndexSpec, IndexType};
@@ -213,6 +214,83 @@ async fn converts_local_nested_list_columns() {
 #[tokio::test]
 async fn ingests_inline_blob_storage() {
     assert_blob_storage(Some(INLINE_PAYLOAD_BYTES), Some("Inline")).await;
+}
+
+#[tokio::test]
+async fn skips_rows_with_missing_http_blobs() {
+    const ASSET: &[u8] = b"asset";
+    const THUMBNAIL: &[u8] = b"thumbnail";
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/asset", get(|| async { Body::from(ASSET) }))
+                .route("/thumbnail", get(|| async { Body::from(THUMBNAIL) })),
+        )
+        .await
+        .unwrap();
+    });
+
+    let temp_dir = TempDir::new().unwrap();
+    let source = temp_dir.path().join("source");
+    let destination = temp_dir.path().join("dataset.lance");
+    tokio::fs::create_dir(&source).await.unwrap();
+    let batch = RecordBatch::try_from_iter([
+        (
+            "asset",
+            Arc::new(StringArray::from(vec![
+                format!("http://{address}/asset"),
+                format!("http://{address}/asset"),
+            ])) as _,
+        ),
+        (
+            "thumbnail",
+            Arc::new(StringArray::from(vec![
+                format!("http://{address}/thumbnail"),
+                format!("http://{address}/missing"),
+            ])) as _,
+        ),
+    ])
+    .unwrap();
+    write_parquet(source.join("part.parquet"), &batch).await;
+
+    let mut job = running_job(&source, &destination);
+    job.blob_columns = vec![
+        BlobColumnSpec {
+            column: "asset".to_owned(),
+        },
+        BlobColumnSpec {
+            column: "thumbnail".to_owned(),
+        },
+    ];
+    let progress = Converter::new(test_config())
+        .unwrap()
+        .convert(&job, Arc::new(ConversionProgress::default()))
+        .await
+        .unwrap();
+
+    assert_eq!(progress.rows_read, 2);
+    assert_eq!(progress.rows_written, 1);
+    assert_eq!(progress.rows_total, 2);
+    assert_eq!(progress.rows_missing_blobs, 1);
+    let dataset = Arc::new(
+        Dataset::open(destination.to_string_lossy().as_ref())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(dataset.count_rows(None).await.unwrap(), 1);
+    for (column, expected) in [("asset", ASSET), ("thumbnail", THUMBNAIL)] {
+        let blobs = dataset
+            .take_blobs_by_indices(&BLOB_ROW_INDEX, column)
+            .await
+            .unwrap();
+        assert_eq!(blobs[0].as_ref().unwrap().read().await.unwrap(), expected);
+    }
+
+    server.abort();
 }
 
 #[tokio::test]

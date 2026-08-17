@@ -296,6 +296,7 @@ async fn updating_progress_keeps_job_running_impl(
         rows_read: 10,
         rows_written: 10,
         rows_total: 20,
+        rows_missing_blobs: 2,
     };
     clock.set(20);
     store
@@ -378,6 +379,7 @@ async fn completing_a_job_clears_its_lease_impl(backend: &str, store: Arc<dyn Jo
         rows_read: 3,
         rows_written: 3,
         rows_total: 3,
+        rows_missing_blobs: 0,
     };
 
     store

@@ -394,10 +394,12 @@ async fn validate_progress_update(
         return Err(StoreError::LeaseLost);
     }
     if incoming.rows_total > 0
-        && (incoming.rows_read > incoming.rows_total || incoming.rows_written > incoming.rows_total)
+        && (incoming.rows_read > incoming.rows_total
+            || incoming.rows_written > incoming.rows_total
+            || incoming.rows_missing_blobs > incoming.rows_total)
     {
         return Err(StoreError::InvalidInput(
-            "read or written rows exceed total rows".to_owned(),
+            "read, written, or missing-blob rows exceed total rows".to_owned(),
         ));
     }
     Ok(job)
