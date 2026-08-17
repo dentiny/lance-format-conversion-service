@@ -1,16 +1,18 @@
 use std::sync::Arc;
 
 use lance::dataset::{ExternalBlobMode, InsertBuilder, WriteMode, WriteParams};
+use lance::session::Session;
 use lance_conversion_core::job::{Job, JobProgress};
 use lance_file::version::LanceFileVersion;
 
 use crate::{
-    ConversionError, ConversionProgress, ConverterConfig, blob, config::ByteConfig, indexes,
-    source, validation,
+    ConversionError, ConversionProgress, ConverterConfig, blob, config::ByteConfig, http_store,
+    indexes, source, validation,
 };
 
 pub struct Converter {
     config: ByteConfig,
+    session: Arc<Session>,
 }
 
 impl Converter {
@@ -21,8 +23,11 @@ impl Converter {
     /// Returns an error when file-size or blob thresholds are inconsistent or
     /// cannot be represented as platform byte counts.
     pub fn new(config: ConverterConfig) -> Result<Self, ConversionError> {
+        let session = Session::default();
+        http_store::register(&session.store_registry());
         Ok(Self {
             config: config.validate()?,
+            session: Arc::new(session),
         })
     }
 
@@ -56,6 +61,7 @@ impl Converter {
         params.max_bytes_per_file = self.config.max_bytes_per_file;
         params.external_blob_mode = ExternalBlobMode::Ingest;
         params.store_params = destination.lance_storage_options()?;
+        params.session = Some(Arc::clone(&self.session));
         let callback_progress = Arc::clone(&progress);
         // One conversion uses one sequential Lance writer. It may rotate files
         // at the configured size, but never writes fragments in parallel.
