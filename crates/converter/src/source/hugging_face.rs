@@ -1,106 +1,125 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use lance::io::ObjectStoreParams;
 use lance_conversion_core::location::DatasetLocation;
-use object_store::{
-    ClientOptions, ObjectStore, ObjectStoreExt, http::HttpBuilder, path::Path as ObjectPath,
-};
-use reqwest::{
-    Url,
-    header::{AUTHORIZATION, HeaderMap, HeaderValue},
-};
-use serde::{Deserialize, Serialize};
+use object_store::{ClientOptions, ObjectStore, http::HttpBuilder, path::Path as ObjectPath};
+use reqwest::Url;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::{PreparedParquetFile, PreparedSource, SourceDataset};
+use super::{PreparedParquetFile, StorageBackend};
 use crate::ConversionError;
 
 const PARQUET_API_URL: &str = "https://datasets-server.huggingface.co/parquet";
+const EXPECTED_URI: &str = "expected hf://datasets/owner/name@revision";
 
-pub(super) struct HuggingFaceDataset {
+pub(super) struct HuggingFaceBackend {
     location: DatasetLocation,
+    client: reqwest::Client,
+    client_options: ClientOptions,
 }
 
-impl HuggingFaceDataset {
-    pub(super) const fn new(location: DatasetLocation) -> Self {
-        Self { location }
+impl HuggingFaceBackend {
+    pub(super) fn new(location: DatasetLocation) -> Self {
+        Self {
+            location,
+            client: reqwest::Client::new(),
+            client_options: ClientOptions::new(),
+        }
     }
 }
 
 #[async_trait]
-impl SourceDataset for HuggingFaceDataset {
-    async fn prepare(&self) -> Result<PreparedSource, ConversionError> {
-        prepare(self.location.uri()).await
+impl StorageBackend for HuggingFaceBackend {
+    async fn list_files(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<PreparedParquetFile>, ConversionError> {
+        let files = list_parquet_files(&self.client, self.location.uri(), limit).await?;
+        let mut prepared = Vec::with_capacity(files.len());
+        for file in files {
+            prepared.push(prepare_file(file, &self.client_options)?);
+        }
+        Ok(prepared)
+    }
+
+    fn lance_storage_options(&self) -> Result<Option<ObjectStoreParams>, ConversionError> {
+        Err(ConversionError::Unsupported(
+            "Hugging Face is not a writable Lance destination".to_owned(),
+        ))
     }
 }
 
-async fn prepare(source_uri: &str) -> Result<PreparedSource, ConversionError> {
+async fn list_parquet_files(
+    client: &reqwest::Client,
+    source_uri: &str,
+    limit: Option<usize>,
+) -> Result<Vec<HuggingFaceParquetFile>, ConversionError> {
     let parsed = HuggingFaceLocation::parse(source_uri)?;
-    let client = reqwest::Client::new();
-    let mut request = client.get(PARQUET_API_URL).query(&parsed);
-    if let Ok(token) = std::env::var("HF_TOKEN") {
-        request = request.bearer_auth(token);
+    let mut files =
+        hf_json::<HuggingFaceParquetResponse>(client.get(PARQUET_API_URL).query(&parsed))
+            .await?
+            .parquet_files;
+    if let Some(limit) = limit {
+        files.truncate(limit);
     }
+    Ok(files)
+}
+
+async fn hf_json<T: DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T, ConversionError> {
     let response = request
         .send()
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| ConversionError::Read(error.to_string()))?
-        .json::<HuggingFaceParquetResponse>()
+        .map_err(|error| ConversionError::Read(error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
         .await
         .map_err(|error| ConversionError::Read(error.to_string()))?;
-    prepare_http_files(response.parquet_files).await
-}
-
-async fn prepare_http_files(
-    parquet_files: Vec<HuggingFaceParquetFile>,
-) -> Result<PreparedSource, ConversionError> {
-    let mut stores = HashMap::<String, Arc<dyn ObjectStore>>::new();
-    let mut prepared = Vec::with_capacity(parquet_files.len());
-    let client_options = http_client_options()?;
-    for file in parquet_files {
-        let url = Url::parse(&file.url)
-            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-        let origin = url.origin().ascii_serialization();
-        let store = if let Some(store) = stores.get(&origin) {
-            Arc::clone(store)
-        } else {
-            let store: Arc<dyn ObjectStore> = Arc::new(
-                HttpBuilder::new()
-                    .with_url(&origin)
-                    .with_client_options(client_options.clone())
-                    .build()
-                    .map_err(|error| ConversionError::Read(error.to_string()))?,
-            );
-            stores.insert(origin, Arc::clone(&store));
-            store
-        };
-        let path = ObjectPath::from_url_path(url.path())
-            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-        let metadata = store
-            .head(&path)
-            .await
-            .map_err(|error| ConversionError::Read(error.to_string()))?;
-        prepared.push(PreparedParquetFile::object(
-            store,
-            path,
-            metadata.size,
-            file.url,
-        ));
+    if !status.is_success() {
+        return Err(ConversionError::Read(format!(
+            "Hugging Face HTTP {status}: {body}"
+        )));
     }
-    PreparedSource::new(prepared).await
+    serde_json::from_str(&body).map_err(|error| {
+        ConversionError::Read(format!("Hugging Face response is not valid JSON: {error}"))
+    })
 }
 
-fn http_client_options() -> Result<ClientOptions, ConversionError> {
-    let Ok(token) = std::env::var("HF_TOKEN") else {
-        return Ok(ClientOptions::new());
-    };
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|error| ConversionError::InvalidSource(error.to_string()))?,
+/// Builds an HTTP object store whose base is the parquet file URL.
+///
+/// Hugging Face convert URLs use one revision segment, `refs%2Fconvert%2Fparquet`.
+/// Splitting that URL into origin + path lets `object_store` decode `%2F` to
+/// `refs/convert/parquet`, which Hugging Face rejects with 404. Passing the
+/// full URL as `with_url` and an empty object path keeps the encoding intact.
+fn prepare_file(
+    file: HuggingFaceParquetFile,
+    client_options: &ClientOptions,
+) -> Result<PreparedParquetFile, ConversionError> {
+    if file.size == 0 {
+        return Err(ConversionError::Read(format!(
+            "Hugging Face parquet file '{}' is missing a size",
+            file.url
+        )));
+    }
+    Url::parse(&file.url).map_err(|error| {
+        ConversionError::Read(format!("Hugging Face parquet URL is invalid: {error}"))
+    })?;
+    let store: Arc<dyn ObjectStore> = Arc::new(
+        HttpBuilder::new()
+            .with_url(&file.url)
+            .with_client_options(client_options.clone())
+            .build()
+            .map_err(|error| ConversionError::Read(error.to_string()))?,
     );
-    Ok(ClientOptions::new().with_default_headers(headers))
+    Ok(PreparedParquetFile::object(
+        store,
+        ObjectPath::default(),
+        file.size,
+        file.url,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -111,6 +130,7 @@ struct HuggingFaceParquetResponse {
 #[derive(Deserialize)]
 struct HuggingFaceParquetFile {
     url: String,
+    size: u64,
 }
 
 #[derive(Serialize)]
@@ -128,33 +148,40 @@ impl HuggingFaceLocation {
         let url = Url::parse(source_uri)
             .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
         if url.scheme() != "hf" || url.host_str() != Some("datasets") {
-            return Err(ConversionError::InvalidSource(
-                "expected hf://datasets/owner/name@revision".to_owned(),
-            ));
+            return Err(ConversionError::InvalidSource(EXPECTED_URI.to_owned()));
         }
-        let dataset_and_revision = url.path().trim_matches('/');
-        let (dataset, revision) = dataset_and_revision
-            .rsplit_once('@')
-            .unwrap_or((dataset_and_revision, "main"));
+        let path = url.path().trim_matches('/');
+        let (dataset, revision) = path.rsplit_once('@').unwrap_or((path, "main"));
         if dataset.split('/').filter(|part| !part.is_empty()).count() != 2 || revision.is_empty() {
-            return Err(ConversionError::InvalidSource(
-                "expected hf://datasets/owner/name@revision".to_owned(),
-            ));
-        }
-        let mut config = None;
-        let mut split = None;
-        for (key, value) in url.query_pairs() {
-            match key.as_ref() {
-                "config" => config = Some(value.into_owned()),
-                "split" => split = Some(value.into_owned()),
-                _ => {}
-            }
+            return Err(ConversionError::InvalidSource(EXPECTED_URI.to_owned()));
         }
         Ok(Self {
             dataset: dataset.to_owned(),
             revision: revision.to_owned(),
-            config,
-            split,
+            config: query_param(&url, "config"),
+            split: query_param(&url, "split"),
         })
+    }
+}
+
+fn query_param(url: &Url, key: &str) -> Option<String> {
+    url.query_pairs()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HuggingFaceLocation;
+
+    #[test]
+    fn parses_hf_dataset_uri() {
+        let parsed =
+            HuggingFaceLocation::parse("hf://datasets/owner/name@main?config=data&split=train")
+                .unwrap();
+        assert_eq!(parsed.dataset, "owner/name");
+        assert_eq!(parsed.revision, "main");
+        assert_eq!(parsed.config.as_deref(), Some("data"));
+        assert_eq!(parsed.split.as_deref(), Some("train"));
     }
 }

@@ -16,8 +16,8 @@ Examples:
 
 const SUBMIT_EXAMPLES: &str = "\
 Examples:
-  lance-convert submit --creator test-user --source testdata/sample.parquet --destination /tmp/sample.lance
-  lance-convert submit --creator test-user --source testdata/sample.parquet --destination /tmp/sample.lance --blob-column asset_url --index label:scalar
+  lance-convert submit --creator test-user --source testdata --destination /tmp/sample.lance
+  lance-convert submit --creator test-user --source testdata --destination /tmp/sample.lance --blob-column asset_url --index label:scalar
   lance-convert submit --creator test-user --source s3://src/data --destination s3://dst/data.lance --blob-column image_url --index label:scalar --index embedding:vector
   lance-convert --url http://10.0.0.12:8080 submit --creator test-user --source /data/in --destination /data/out.lance
 ";

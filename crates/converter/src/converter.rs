@@ -5,8 +5,11 @@ use lance_conversion_core::job::{Job, JobProgress};
 use lance_file::version::LanceFileVersion;
 
 use crate::{
-    ConversionError, ConversionProgress, ConverterConfig, blob, config::ByteConfig, indexes,
-    source, validation,
+    ConversionError, ConversionProgress, ConverterConfig, blob,
+    config::ByteConfig,
+    indexes,
+    source::{self, StorageBackend},
+    validation,
 };
 
 pub struct Converter {
@@ -37,6 +40,7 @@ impl Converter {
         job: &Job,
         progress: Arc<ConversionProgress>,
     ) -> Result<JobProgress, ConversionError> {
+        let destination = source::open_backend(&job.destination_uri)?;
         let prepared = source::open_validated_source(&job.source_uri).await?;
         let stream = prepared.into_stream();
 
@@ -54,6 +58,7 @@ impl Converter {
         params.mode = WriteMode::Overwrite;
         params.max_bytes_per_file = self.config.max_bytes_per_file;
         params.external_blob_mode = ExternalBlobMode::Ingest;
+        params.store_params = destination.lance_storage_options()?;
         let callback_progress = Arc::clone(&progress);
         // One conversion uses one sequential Lance writer. It may rotate files
         // at the configured size, but never writes fragments in parallel.

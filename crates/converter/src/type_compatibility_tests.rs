@@ -34,9 +34,7 @@ async fn convert_field(root: &std::path::Path, field: &Field) -> Result<(), Stri
     let schema = Arc::new(Schema::new(vec![field.clone()]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![get_test_array(field)])
         .map_err(|error| error.to_string())?;
-    write_parquet(source.join("data.parquet"), &batch)
-        .await
-        .map_err(|error| error.to_string())?;
+    write_parquet(source.join("data.parquet"), &batch).await;
 
     Converter::new(ConverterConfig {
         target_lance_file_size_mib: TARGET_FILE_SIZE_MIB,

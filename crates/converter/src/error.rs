@@ -8,6 +8,8 @@ pub enum ConversionError {
     InvalidSource(String),
     #[error("invalid destination: {0}")]
     InvalidDestination(String),
+    #[error("unsupported: {0}")]
+    Unsupported(String),
     #[error("unsupported source schema: {0}")]
     UnsupportedType(String),
     #[error("invalid blob column specification: {0}")]

@@ -54,7 +54,7 @@
                 <input id="source-uri" name="source_uri" type="text" spellcheck="false" placeholder="s3://bucket/dataset or hf://datasets/org/name" aria-describedby="source-help" required>
                 <button id="inspect-button" class="button button-secondary" type="button">Inspect schema</button>
               </div>
-              <small id="source-help" class="field-help">Supported location schemes depend on service configuration.</small>
+              <small id="source-help" class="field-help">NFS sources must be a directory of <code>*.parquet</code> files. Subdirectories are not listed.</small>
               <div class="storage-options" id="hf-source-fields" hidden>
                 <div class="storage-option-grid">
                   <div class="storage-option">

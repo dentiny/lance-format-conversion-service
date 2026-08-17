@@ -39,9 +39,7 @@ async fn converts_local_parquet_directory() {
         vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
     )
     .unwrap();
-    write_parquet(source.join("part.parquet"), &batch)
-        .await
-        .unwrap();
+    write_parquet(source.join("part.parquet"), &batch).await;
 
     let job = running_job(&source, &destination);
     let converter = Converter::new(ConverterConfig {
@@ -86,7 +84,7 @@ async fn converts_matching_parquet_files_in_sorted_order() {
             vec![Arc::new(Int64Array::from(vec![value]))],
         )
         .unwrap();
-        write_parquet(source.join(file_name), &batch).await.unwrap();
+        write_parquet(source.join(file_name), &batch).await;
     }
 
     let progress = Converter::new(test_config())
@@ -136,12 +134,8 @@ async fn rejects_mismatched_parquet_file_schemas() {
     let strings =
         RecordBatch::try_from_iter([("value", Arc::new(StringArray::from(vec!["one"])) as _)])
             .unwrap();
-    write_parquet(source.join("part-a.parquet"), &integers)
-        .await
-        .unwrap();
-    write_parquet(source.join("part-b.parquet"), &strings)
-        .await
-        .unwrap();
+    write_parquet(source.join("part-a.parquet"), &integers).await;
+    write_parquet(source.join("part-b.parquet"), &strings).await;
 
     let error = Converter::new(test_config())
         .unwrap()
@@ -179,9 +173,7 @@ async fn converts_local_nested_list_columns() {
     let source = temp_dir.path().join("source");
     let destination = temp_dir.path().join("dataset.lance");
     tokio::fs::create_dir(&source).await.unwrap();
-    write_parquet(source.join("part.parquet"), &batch)
-        .await
-        .unwrap();
+    write_parquet(source.join("part.parquet"), &batch).await;
 
     let job = running_job(&source, &destination);
     Converter::new(ConverterConfig {
@@ -259,9 +251,7 @@ async fn assert_blob_storage(payload_size: Option<usize>, expected_kind: Option<
         vec![Arc::new(StringArray::from(vec![blob_url]))],
     )
     .unwrap();
-    write_parquet(source.join("part.parquet"), &batch)
-        .await
-        .unwrap();
+    write_parquet(source.join("part.parquet"), &batch).await;
 
     let mut job = running_job(&source, &destination);
     job.blob_columns = vec![BlobColumnSpec {
@@ -314,9 +304,7 @@ async fn creates_requested_scalar_and_text_indexes() {
         ],
     )
     .unwrap();
-    write_parquet(source.join("part.parquet"), &batch)
-        .await
-        .unwrap();
+    write_parquet(source.join("part.parquet"), &batch).await;
 
     let mut job = running_job(&source, &destination);
     job.indices = vec![

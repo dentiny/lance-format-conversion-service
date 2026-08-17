@@ -40,13 +40,16 @@ files into a versioned dataset designed for multimodal and AI workloads:
 
 ### Sources and destinations
 
-- Convert one Parquet file or a directory of Parquet files into a Lance 2.3
-  dataset.
+- Convert a flat directory of Parquet files into a Lance 2.3 dataset.
 - Read source data from NFS-mounted paths, AWS S3, or Hugging Face datasets.
 - Write Lance datasets to NFS-mounted paths or AWS S3.
 - Stream Hugging Face Parquet files directly over HTTP without staging them on
   local disk.
 - Source datasets are read-only and are never deleted by this service.
+
+NFS sources must be a directory. The service lists `*.parquet` files in that
+directory only and does not recurse into subdirectories. Point the source at
+the folder that contains the shards, not at a single file.
 
 ### Schema, blobs, and indexes
 
@@ -133,7 +136,6 @@ reconciler processes against one PostgreSQL database.
 - PostgreSQL for the default backend, or a local filesystem path when using
   SQLite
 - AWS credentials for S3, when reading or writing object storage
-- `HF_TOKEN` in the environment when reading a private Hugging Face dataset
 
 Start the web control plane in the first terminal:
 
@@ -187,7 +189,8 @@ by its nullable `asset_url` column.
 
 1. Open the scheduling page.
 2. Enter a creator name.
-3. Use the absolute path to `testdata/sample.parquet` as the source.
+3. Use the absolute path to the `testdata` directory as the source. That
+   directory contains `sample.parquet` at the top level.
 4. Use an absolute destination path ending in `.lance`.
 5. Select **Copy**, then choose **Inspect schema**.
 6. Select `asset_url` as a blob column. Optionally select indexes for compatible
@@ -272,7 +275,7 @@ examples on its help page: `lance-convert --help`, `lance-convert submit --help`
 ```shell
 cargo run -p lance-convert -- submit \
   --creator test-user \
-  --source testdata/sample.parquet \
+  --source testdata \
   --destination /tmp/sample.lance \
   --blob-column asset_url \
   --index label:scalar

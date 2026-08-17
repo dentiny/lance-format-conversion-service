@@ -17,17 +17,21 @@ pub struct SourceColumn {
     pub blob_eligible: bool,
 }
 
-/// Inspects the validated common Parquet schema for a conversion source.
+/// Inspects the validated Parquet schema for a conversion source.
+///
+/// Dispatches to the location-specific `get_schema` implementation so a
+/// directory, S3 prefix, or Hugging Face dataset can inspect columns without
+/// preparing every file.
 ///
 /// # Errors
 ///
-/// Returns an error when the URI is invalid, the source cannot be prepared or
-/// read, its Parquet schemas do not match, or its schema is unsupported.
+/// Returns an error when the URI is invalid, the source cannot be read, or its
+/// schema is unsupported.
 pub async fn inspect_source_schema(
     source_uri: &str,
 ) -> Result<SourceSchemaInspection, ConversionError> {
-    let prepared = source::open_validated_source(source_uri).await?;
-    let fields = prepared.schema().fields();
+    let schema = source::get_source_schema(source_uri).await?;
+    let fields = schema.fields();
 
     let columns = fields
         .iter()
@@ -46,47 +50,18 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::{
-        array::{Int64Array, RecordBatch, StringArray, new_empty_array},
+        array::{RecordBatch, new_empty_array},
         datatypes::{DataType, Field, Schema},
     };
-    use lance_test_support::write_parquet;
+    use lance_test_support::{write_parquet, write_test_parquet};
     use tempfile::TempDir;
 
     use super::inspect_source_schema;
 
-    const FIRST_PARQUET_FILE: &str = "part-0.parquet";
-    const SECOND_PARQUET_FILE: &str = "part-1.parquet";
-
-    /// Verifies local preparation, union schema semantics, and blob eligibility.
     #[tokio::test]
     async fn inspects_local_parquet_columns_and_blob_eligibility() {
         let temp_dir = TempDir::new().unwrap();
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("text", DataType::Utf8, true),
-            Field::new("number", DataType::Int64, false),
-        ]));
-        let first = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(StringArray::from(vec![Some("first")])),
-                Arc::new(Int64Array::from(vec![1])),
-            ],
-        )
-        .unwrap();
-        let second = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StringArray::from(vec![Some("second")])),
-                Arc::new(Int64Array::from(vec![2])),
-            ],
-        )
-        .unwrap();
-        write_parquet(temp_dir.path().join(FIRST_PARQUET_FILE), &first)
-            .await
-            .unwrap();
-        write_parquet(temp_dir.path().join(SECOND_PARQUET_FILE), &second)
-            .await
-            .unwrap();
+        write_test_parquet(temp_dir.path()).await;
 
         let inspection = inspect_source_schema(temp_dir.path().to_string_lossy().as_ref())
             .await
@@ -101,7 +76,6 @@ mod tests {
         assert!(!inspection.columns[1].nullable);
     }
 
-    /// Verifies nested Arrow types use their normal display representation.
     #[tokio::test]
     async fn displays_nested_local_parquet_type() {
         let temp_dir = TempDir::new().unwrap();
@@ -120,9 +94,7 @@ mod tests {
             vec![new_empty_array(schema.field(0).data_type())],
         )
         .unwrap();
-        write_parquet(temp_dir.path().join(FIRST_PARQUET_FILE), &batch)
-            .await
-            .unwrap();
+        write_parquet(temp_dir.path().join("part-0.parquet"), &batch).await;
 
         let inspection = inspect_source_schema(temp_dir.path().to_string_lossy().as_ref())
             .await

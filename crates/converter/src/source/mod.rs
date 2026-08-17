@@ -1,22 +1,22 @@
-mod directory;
 mod hugging_face;
 mod nfs;
-mod s3;
+mod object_storage;
+mod storage_backend;
 
 use std::{path::PathBuf, sync::Arc};
 
-use arrow::datatypes::{Schema, SchemaRef};
-use async_trait::async_trait;
+use arrow::datatypes::SchemaRef;
 use futures::{StreamExt, TryStreamExt, stream};
 use lance::deps::datafusion::{
     error::DataFusionError,
     physical_plan::{SendableRecordBatchStream, stream::RecordBatchStreamAdapter},
 };
-use lance_conversion_core::location::{DatasetLocation, LocationKind};
 use object_store::{ObjectStore, path::Path as ObjectPath};
 use parquet::arrow::{ParquetRecordBatchStreamBuilder, async_reader::ParquetObjectReader};
 
 use crate::{ConversionError, validation};
+
+pub(crate) use storage_backend::{StorageBackend, open_backend};
 
 pub(crate) struct PreparedSource {
     files: Vec<PreparedParquetFile>,
@@ -36,7 +36,7 @@ impl PreparedSource {
         for file in &files {
             let file_schema = file.read_schema().await?;
             if let Some(expected) = &schema {
-                if !schemas_compatible(expected, &file_schema) {
+                if expected.as_ref() != file_schema.as_ref() {
                     return Err(ConversionError::Validation(format!(
                         "Parquet file '{}' has schema {file_schema:?}, which does not match the source schema {expected:?}",
                         file.location()
@@ -51,10 +51,6 @@ impl PreparedSource {
         Ok(Self { files, schema })
     }
 
-    pub(crate) fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-
     pub(crate) fn into_stream(self) -> SendableRecordBatchStream {
         let schema = Arc::clone(&self.schema);
         let batches = stream::iter(self.files)
@@ -65,7 +61,7 @@ impl PreparedSource {
     }
 }
 
-enum PreparedParquetFile {
+pub(crate) enum PreparedParquetFile {
     Local {
         path: PathBuf,
         location: String,
@@ -104,7 +100,7 @@ impl PreparedParquetFile {
         }
     }
 
-    async fn read_schema(&self) -> Result<SchemaRef, ConversionError> {
+    pub(super) async fn read_schema(&self) -> Result<SchemaRef, ConversionError> {
         match self {
             Self::Local { path, .. } => {
                 let file = tokio::fs::File::open(path)
@@ -161,47 +157,14 @@ where
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, batches)))
 }
 
-fn schemas_compatible(expected: &Schema, actual: &Schema) -> bool {
-    expected == actual
+/// Returns the validated schema for a source without opening every file.
+pub(crate) async fn get_source_schema(source_uri: &str) -> Result<SchemaRef, ConversionError> {
+    open_backend(source_uri)?.get_schema().await
 }
 
-/// Provides a uniform interface for preparing source datasets.
-///
-/// Implementations resolve native locations into directly readable Parquet
-/// files.
-#[async_trait]
-pub(crate) trait SourceDataset: Send + Sync {
-    /// Makes the source's Parquet files available to the conversion reader.
-    ///
-    /// Resolves the source dataset into individual Parquet file locations.
-    ///
-    /// Implementations list directory or prefix sources and retain any object
-    /// stores required to stream the returned files.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the location is invalid or its Parquet files cannot
-    /// be made available.
-    async fn prepare(&self) -> Result<PreparedSource, ConversionError>;
-}
-
-impl dyn SourceDataset {
-    pub(crate) fn open(source: DatasetLocation) -> Box<Self> {
-        match source.kind() {
-            LocationKind::Nfs | LocationKind::S3 => {
-                Box::new(directory::DirectorySource::new(source))
-            }
-            LocationKind::HuggingFace => Box::new(hugging_face::HuggingFaceDataset::new(source)),
-        }
-    }
-}
-
-/// Opens, prepares, and validates one source for inspection or conversion.
+/// Lists and validates every Parquet file in a source for conversion.
 pub(crate) async fn open_validated_source(
     source_uri: &str,
 ) -> Result<PreparedSource, ConversionError> {
-    let location = DatasetLocation::parse_location(source_uri)
-        .map_err(|error| ConversionError::InvalidSource(error.to_string()))?;
-    let source = <dyn SourceDataset>::open(location);
-    source.prepare().await
+    PreparedSource::new(open_backend(source_uri)?.list_files(None).await?).await
 }

@@ -442,8 +442,6 @@ mod tests {
             vec![Arc::new(Int64Array::from(TEST_VALUES.to_vec()))],
         )
         .unwrap();
-        write_parquet_file(directory.join("part.parquet"), &batch)
-            .await
-            .unwrap();
+        write_parquet_file(directory.join("part.parquet"), &batch).await;
     }
 }
