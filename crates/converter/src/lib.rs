@@ -6,6 +6,7 @@ mod indexes;
 mod inspection;
 mod progress;
 mod source;
+mod storage;
 mod validation;
 
 pub use config::ConverterConfig;

@@ -8,7 +8,7 @@ use reqwest::Client;
 
 use crate::{
     ConversionError, ConversionProgress, ConverterConfig, blob, config::ByteConfig, indexes,
-    source, validation,
+    source, storage, validation,
 };
 
 pub struct Converter {
@@ -33,7 +33,7 @@ impl Converter {
         })
     }
 
-    /// Converts one immutable Parquet source into a Lance 2.3 dataset.
+    /// Converts one immutable Parquet, Hugging Face, or WARC source into Lance.
     ///
     /// # Errors
     ///
@@ -44,9 +44,8 @@ impl Converter {
         job: &Job,
         progress: Arc<ConversionProgress>,
     ) -> Result<JobProgress, ConversionError> {
-        let destination = source::open_backend(&job.destination_uri)?;
-        let prepared = source::open_validated_source(&job.source_uri).await?;
-        let stream = prepared.into_stream();
+        let destination_options = storage::lance_storage_options(&job.destination_uri)?;
+        let stream = source::open(&job.source_uri).await?;
 
         let stream = blob::apply_blob_columns(
             stream,
@@ -63,7 +62,7 @@ impl Converter {
         params.mode = WriteMode::Overwrite;
         params.max_bytes_per_file = self.config.max_bytes_per_file;
         params.external_blob_mode = ExternalBlobMode::Ingest;
-        params.store_params = destination.lance_storage_options()?;
+        params.store_params = destination_options;
         params.session = Some(Arc::clone(&self.session));
         let callback_progress = Arc::clone(&progress);
         // One conversion uses one sequential Lance writer. It may rotate files
