@@ -1,9 +1,9 @@
 # Lance format conversion service
 
-Rust service and web application for converting Parquet files, Parquet
-directories, and Hugging Face datasets into Lance 2.3. Sources can be read from
-NFS-mounted paths, AWS S3, or Hugging Face; destinations can be written to
-NFS-mounted paths or AWS S3. Iceberg support is deferred.
+Rust service and web application for converting Parquet files, Hugging Face
+datasets, and WARC files into Lance 2.3. Sources can be read from NFS-mounted
+paths, AWS S3, or Hugging Face; destinations can be written to NFS-mounted
+paths or AWS S3. Iceberg support is deferred.
 
 The service assumes that a source dataset remains immutable after schema
 validation and throughout conversion.
@@ -40,16 +40,19 @@ files into a versioned dataset designed for multimodal and AI workloads:
 
 ### Sources and destinations
 
-- Convert a flat directory of Parquet files into a Lance 2.3 dataset.
+- Convert Parquet files, directories, and object-storage prefixes into a Lance
+  2.3 dataset.
 - Read source data from NFS-mounted paths, AWS S3, or Hugging Face datasets.
 - Write Lance datasets to NFS-mounted paths or AWS S3.
 - Stream Hugging Face Parquet files directly over HTTP without staging them on
   local disk.
+- Stream local or S3 `.warc` and `.warc.gz` files into a standard 20-column
+  WARC Arrow schema.
 - Source datasets are read-only and are never deleted by this service.
 
-NFS sources must be a directory. The service lists `*.parquet` files in that
-directory only and does not recurse into subdirectories. Point the source at
-the folder that contains the shards, not at a single file.
+Parquet sources may be one file or a directory or object-storage prefix.
+Directories and prefixes are searched recursively for `*.parquet` files.
+WARC sources must point directly at one `.warc` or `.warc.gz` file.
 
 ### Schema, blobs, and indexes
 
@@ -88,7 +91,8 @@ the folder that contains the shards, not at a single file.
 ## Workspace architecture
 
 - `crates/core`: job models and dataset location classification
-- `crates/converter`: Parquet and Hugging Face readers, schema inspection,
+- `crates/converter`: format-specific Parquet, Hugging Face, and WARC readers;
+  independent NFS, S3, and HTTP storage adapters; schema inspection,
   validation, Lance writes, and progress accounting
 - `crates/job-store`: object-safe `JobStore` interface and storage errors
 - `crates/job-store-factory`: database URL dispatch and backend construction.

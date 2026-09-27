@@ -1,69 +1,51 @@
-use std::sync::Arc;
-
+use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
-use lance::io::ObjectStoreParams;
-use lance_conversion_core::location::DatasetLocation;
-use object_store::{ClientOptions, ObjectStore, http::HttpBuilder, path::Path as ObjectPath};
+use lance::deps::datafusion::physical_plan::SendableRecordBatchStream;
 use reqwest::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::{PreparedParquetFile, StorageBackend};
-use crate::ConversionError;
+use super::{
+    Source,
+    parquet::{ParquetSource, PreparedParquetFile},
+};
+use crate::{ConversionError, storage};
 
 const PARQUET_API_URL: &str = "https://datasets-server.huggingface.co/parquet";
 const EXPECTED_URI: &str = "expected hf://datasets/owner/name@revision";
 
-pub(super) struct HuggingFaceBackend {
-    location: DatasetLocation,
-    client: reqwest::Client,
-    client_options: ClientOptions,
+pub(super) struct HuggingFaceSource {
+    uri: String,
 }
 
-impl HuggingFaceBackend {
-    pub(super) fn new(location: DatasetLocation) -> Self {
+impl HuggingFaceSource {
+    pub(super) fn new(uri: &str) -> Self {
         Self {
-            location,
-            client: reqwest::Client::new(),
-            client_options: ClientOptions::new(),
+            uri: uri.to_owned(),
         }
+    }
+
+    pub(super) async fn schema(uri: &str) -> Result<SchemaRef, ConversionError> {
+        let files = parquet_files(uri).await?;
+        let file = files.into_iter().next().ok_or_else(no_parquet_files)?;
+        Box::new(ParquetSource::from_files(vec![prepare_file(&file)?]))
+            .into_stream()
+            .await
+            .map(|stream| stream.schema())
     }
 }
 
 #[async_trait]
-impl StorageBackend for HuggingFaceBackend {
-    async fn list_files(
-        &self,
-        limit: Option<usize>,
-    ) -> Result<Vec<PreparedParquetFile>, ConversionError> {
-        let files = list_parquet_files(&self.client, self.location.uri(), limit).await?;
-        let mut prepared = Vec::with_capacity(files.len());
-        for file in files {
-            prepared.push(prepare_file(file, &self.client_options)?);
-        }
-        Ok(prepared)
-    }
-
-    fn lance_storage_options(&self) -> Result<Option<ObjectStoreParams>, ConversionError> {
-        Err(ConversionError::Unsupported(
-            "Hugging Face is not a writable Lance destination".to_owned(),
-        ))
-    }
-}
-
-async fn list_parquet_files(
-    client: &reqwest::Client,
-    source_uri: &str,
-    limit: Option<usize>,
-) -> Result<Vec<HuggingFaceParquetFile>, ConversionError> {
-    let parsed = HuggingFaceLocation::parse(source_uri)?;
-    let mut files =
-        hf_json::<HuggingFaceParquetResponse>(client.get(PARQUET_API_URL).query(&parsed))
+impl Source for HuggingFaceSource {
+    async fn into_stream(self: Box<Self>) -> Result<SendableRecordBatchStream, ConversionError> {
+        let files = parquet_files(&self.uri)
             .await?
-            .parquet_files;
-    if let Some(limit) = limit {
-        files.truncate(limit);
+            .iter()
+            .map(prepare_file)
+            .collect::<Result<Vec<_>, _>>()?;
+        Box::new(ParquetSource::from_files(files))
+            .into_stream()
+            .await
     }
-    Ok(files)
 }
 
 async fn hf_json<T: DeserializeOwned>(
@@ -94,31 +76,37 @@ async fn hf_json<T: DeserializeOwned>(
 /// Splitting that URL into origin + path lets `object_store` decode `%2F` to
 /// `refs/convert/parquet`, which Hugging Face rejects with 404. Passing the
 /// full URL as `with_url` and an empty object path keeps the encoding intact.
-fn prepare_file(
-    file: HuggingFaceParquetFile,
-    client_options: &ClientOptions,
-) -> Result<PreparedParquetFile, ConversionError> {
+async fn parquet_files(source_uri: &str) -> Result<Vec<HuggingFaceParquetFile>, ConversionError> {
+    let location = HuggingFaceLocation::parse(source_uri)?;
+    Ok(hf_json::<HuggingFaceParquetResponse>(
+        reqwest::Client::new().get(PARQUET_API_URL).query(&location),
+    )
+    .await?
+    .parquet_files
+    .into_iter()
+    .filter(|file| {
+        location
+            .config
+            .as_ref()
+            .is_none_or(|config| config == &file.config)
+            && location
+                .split
+                .as_ref()
+                .is_none_or(|split| split == &file.split)
+    })
+    .collect())
+}
+
+fn prepare_file(file: &HuggingFaceParquetFile) -> Result<PreparedParquetFile, ConversionError> {
     if file.size == 0 {
         return Err(ConversionError::Read(format!(
             "Hugging Face parquet file '{}' is missing a size",
             file.url
         )));
     }
-    Url::parse(&file.url).map_err(|error| {
-        ConversionError::Read(format!("Hugging Face parquet URL is invalid: {error}"))
-    })?;
-    let store: Arc<dyn ObjectStore> = Arc::new(
-        HttpBuilder::new()
-            .with_url(&file.url)
-            .with_client_options(client_options.clone())
-            .build()
-            .map_err(|error| ConversionError::Read(error.to_string()))?,
-    );
-    Ok(PreparedParquetFile::object(
-        store,
-        ObjectPath::default(),
+    Ok(PreparedParquetFile::new(
+        storage::http(&file.url, file.size)?,
         file.size,
-        file.url,
     ))
 }
 
@@ -129,6 +117,8 @@ struct HuggingFaceParquetResponse {
 
 #[derive(Deserialize)]
 struct HuggingFaceParquetFile {
+    config: String,
+    split: String,
     url: String,
     size: u64,
 }
@@ -168,6 +158,10 @@ fn query_param(url: &Url, key: &str) -> Option<String> {
     url.query_pairs()
         .find(|(name, _)| name == key)
         .map(|(_, value)| value.into_owned())
+}
+
+fn no_parquet_files() -> ConversionError {
+    ConversionError::InvalidSource("source contains no Parquet files".to_owned())
 }
 
 #[cfg(test)]

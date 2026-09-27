@@ -51,10 +51,10 @@
             <div class="field field-wide">
               <label for="source-uri">Source URI</label>
               <div class="input-action">
-                <input id="source-uri" name="source_uri" type="text" spellcheck="false" placeholder="s3://bucket/dataset or hf://datasets/org/name" aria-describedby="source-help" required>
+                <input id="source-uri" name="source_uri" type="text" spellcheck="false" placeholder="s3://bucket/dataset, archive.warc.gz, or hf://datasets/org/name" aria-describedby="source-help" required>
                 <button id="inspect-button" class="button button-secondary" type="button">Inspect schema</button>
               </div>
-              <small id="source-help" class="field-help">NFS sources must be a directory of <code>*.parquet</code> files. Subdirectories are not listed.</small>
+              <small id="source-help" class="field-help">Parquet sources may be a file or directory; WARC sources must be one <code>.warc</code> or <code>.warc.gz</code> file.</small>
               <div class="storage-options" id="hf-source-fields" hidden>
                 <div class="storage-option-grid">
                   <div class="storage-option">

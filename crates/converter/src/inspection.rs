@@ -17,7 +17,7 @@ pub struct SourceColumn {
     pub blob_eligible: bool,
 }
 
-/// Inspects the validated Parquet schema for a conversion source.
+/// Inspects the validated schema for a Parquet, Hugging Face, or WARC source.
 ///
 /// Dispatches to the location-specific `get_schema` implementation so a
 /// directory, S3 prefix, or Hugging Face dataset can inspect columns without
@@ -106,5 +106,21 @@ mod tests {
         assert!(nested.data_type.contains("Struct"));
         assert!(nested.data_type.contains("Int64"));
         assert!(!nested.blob_eligible);
+    }
+
+    #[tokio::test]
+    async fn inspects_local_warc_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("archive.warc.gz");
+        tokio::fs::write(&source, []).await.unwrap();
+
+        let inspection = inspect_source_schema(source.to_string_lossy().as_ref())
+            .await
+            .unwrap();
+
+        assert_eq!(inspection.columns.len(), 20);
+        assert_eq!(inspection.columns[0].name, "id");
+        assert_eq!(inspection.columns[19].name, "body");
+        assert_eq!(inspection.columns[19].data_type, "BinaryView");
     }
 }

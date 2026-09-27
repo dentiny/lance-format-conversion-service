@@ -1,43 +1,43 @@
-use std::{fmt, str::FromStr};
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LocationKind {
+/// Logical format exposed by a conversion source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Parquet,
+    HuggingFace,
+    Warc,
+}
+
+/// Physical backend that stores a dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
     Nfs,
     S3,
     HuggingFace,
 }
 
-impl fmt::Display for LocationKind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Nfs => "nfs",
-            Self::S3 => "s3",
-            Self::HuggingFace => "hugging_face",
+impl SourceKind {
+    /// Classifies source format independently from its storage backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URI uses an unsupported scheme.
+    pub fn from_uri(uri: &str) -> Result<Self, LocationError> {
+        let location = DatasetLocation::parse_location(uri)?;
+        Ok(if location.storage_kind() == StorageKind::HuggingFace {
+            Self::HuggingFace
+        } else if is_warc_source_uri(uri) {
+            Self::Warc
+        } else {
+            Self::Parquet
         })
-    }
-}
-
-impl FromStr for LocationKind {
-    type Err = LocationError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "nfs" => Ok(Self::Nfs),
-            "s3" => Ok(Self::S3),
-            "hugging_face" => Ok(Self::HuggingFace),
-            _ => Err(LocationError::UnsupportedScheme(value.to_owned())),
-        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatasetLocation {
     uri: String,
-    kind: LocationKind,
 }
 
 impl DatasetLocation {
@@ -48,8 +48,8 @@ impl DatasetLocation {
     /// Returns an error when an explicit scheme is unsupported.
     pub fn parse_location(uri: impl Into<String>) -> Result<Self, LocationError> {
         let uri = uri.into();
-        let kind = parse_kind(&uri)?;
-        Ok(Self { uri, kind })
+        validate_scheme(&uri)?;
+        Ok(Self { uri })
     }
 
     #[must_use]
@@ -58,8 +58,14 @@ impl DatasetLocation {
     }
 
     #[must_use]
-    pub const fn kind(&self) -> LocationKind {
-        self.kind
+    pub fn storage_kind(&self) -> StorageKind {
+        if self.uri.starts_with("s3://") {
+            StorageKind::S3
+        } else if self.uri.starts_with("hf://") {
+            StorageKind::HuggingFace
+        } else {
+            StorageKind::Nfs
+        }
     }
 }
 
@@ -69,43 +75,77 @@ pub enum LocationError {
     UnsupportedScheme(String),
 }
 
-fn parse_kind(uri: &str) -> Result<LocationKind, LocationError> {
-    if uri.starts_with("s3://") {
-        Ok(LocationKind::S3)
-    } else if uri.starts_with("hf://") {
-        Ok(LocationKind::HuggingFace)
+/// Returns whether a source URI names a WARC or gzip-compressed WARC file.
+#[must_use]
+pub fn is_warc_source_uri(uri: &str) -> bool {
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
+    let path = std::path::Path::new(path);
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("warc"))
+    {
+        return true;
+    }
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gz"))
+        && path
+            .file_stem()
+            .map(std::path::Path::new)
+            .and_then(std::path::Path::extension)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("warc"))
+}
+
+fn validate_scheme(uri: &str) -> Result<(), LocationError> {
+    if uri.starts_with("s3://") || uri.starts_with("hf://") {
+        Ok(())
     } else if let Some((scheme, _)) = uri.split_once("://") {
         Err(LocationError::UnsupportedScheme(scheme.to_owned()))
     } else {
-        Ok(LocationKind::Nfs)
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DatasetLocation, LocationError, LocationKind};
+    use super::{DatasetLocation, LocationError, SourceKind, StorageKind};
 
     #[test]
     fn accepts_supported_locations() {
         assert_eq!(
             DatasetLocation::parse_location("/datasets/images")
                 .unwrap()
-                .kind(),
-            LocationKind::Nfs
+                .storage_kind(),
+            StorageKind::Nfs
         );
         assert_eq!(
             DatasetLocation::parse_location("s3://example-bucket/datasets/images")
                 .unwrap()
-                .kind(),
-            LocationKind::S3
+                .storage_kind(),
+            StorageKind::S3
         );
         assert_eq!(
             DatasetLocation::parse_location(
                 "hf://datasets/owner/name@main?config=default&split=train"
             )
             .unwrap()
-            .kind(),
-            LocationKind::HuggingFace
+            .storage_kind(),
+            StorageKind::HuggingFace
+        );
+    }
+
+    #[test]
+    fn classifies_source_format_independently_from_storage() {
+        assert_eq!(
+            SourceKind::from_uri("/datasets/images").unwrap(),
+            SourceKind::Parquet
+        );
+        assert_eq!(
+            SourceKind::from_uri("s3://bucket/archive.warc.gz").unwrap(),
+            SourceKind::Warc
+        );
+        assert_eq!(
+            SourceKind::from_uri("hf://datasets/owner/name").unwrap(),
+            SourceKind::HuggingFace
         );
     }
 

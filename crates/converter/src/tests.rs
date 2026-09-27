@@ -1,13 +1,14 @@
-use std::sync::Arc;
+use std::{fmt::Write as _, io::Write as _, path::Path, sync::Arc};
 
 use arrow::{
     array::{
-        Array, Int64Array, RecordBatch, StringArray,
+        Array, BinaryArray, BinaryViewArray, Int64Array, RecordBatch, StringArray,
         builder::{Int64Builder, ListBuilder},
     },
     datatypes::{DataType, Field, Schema},
 };
 use axum::{Router, body::Body, routing::get};
+use flate2::{Compression, write::GzEncoder};
 use futures::TryStreamExt;
 use lance::{Dataset, index::DatasetIndexExt};
 use lance_conversion_core::job::{BlobColumnSpec, IndexSpec, IndexType};
@@ -66,6 +67,52 @@ async fn converts_local_parquet_directory() {
         DataType::Int64
     );
     assert!(!dataset.schema().field("value").unwrap().nullable);
+}
+
+#[tokio::test]
+async fn converts_plain_and_gzipped_local_warc_files() {
+    for gzipped in [false, true] {
+        let temp_dir = TempDir::new().unwrap();
+        let extension = if gzipped { "warc.gz" } else { "warc" };
+        let source = temp_dir.path().join(format!("records.{extension}"));
+        let destination = temp_dir.path().join("dataset.lance");
+        write_warc(&source, gzipped, &[(1, "first"), (2, "second")]).await;
+
+        let progress = Converter::new(test_config())
+            .unwrap()
+            .convert(
+                &running_job(&source, &destination),
+                Arc::new(ConversionProgress::default()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(progress.rows_total, 2);
+        let dataset = Dataset::open(destination.to_string_lossy().as_ref())
+            .await
+            .unwrap();
+        let batches = dataset
+            .scan()
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        let body = batches[0].column_by_name("body").unwrap();
+        let first_body = body
+            .as_any()
+            .downcast_ref::<BinaryViewArray>()
+            .map(|array| array.value(0))
+            .or_else(|| {
+                body.as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .map(|array| array.value(0))
+            })
+            .unwrap();
+        assert_eq!(first_body, b"first");
+    }
 }
 
 #[tokio::test]
@@ -424,4 +471,35 @@ fn test_config() -> ConverterConfig {
         blob_inline_threshold_mib: BLOB_INLINE_THRESHOLD_MIB,
         blob_dedicated_threshold_mib: BLOB_DEDICATED_THRESHOLD_MIB,
     }
+}
+
+async fn write_warc(path: &Path, gzipped: bool, records: &[(usize, &str)]) {
+    let contents = records
+        .iter()
+        .fold(String::new(), |mut contents, (id, body)| {
+            write!(
+                contents,
+                "WARC/1.0\r\n\
+                 WARC-Type: response\r\n\
+                 WARC-Record-ID: <urn:uuid:{id}>\r\n\
+                 WARC-Date: 2024-01-02T03:04:05Z\r\n\
+                 WARC-Target-URI: https://example.com/{id}\r\n\
+                 Content-Type: text/plain\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n\
+                 {body}\r\n\
+                 \r\n",
+                body.len()
+            )
+            .unwrap();
+            contents
+        });
+    let bytes = if gzipped {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(contents.as_bytes()).unwrap();
+        encoder.finish().unwrap()
+    } else {
+        contents.into_bytes()
+    };
+    tokio::fs::write(path, bytes).await.unwrap();
 }

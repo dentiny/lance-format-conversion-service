@@ -187,7 +187,7 @@ function updateHfFields() {
   if (elements.sourceHelp) {
     elements.sourceHelp.textContent = detected
       ? "Hugging Face dataset detected. Set config, split, and revision, then inspect."
-      : "Supported location schemes depend on service configuration.";
+      : "Parquet sources may be a file or directory; WARC sources must be one .warc or .warc.gz file.";
   }
   syncHfFieldsFromSource();
 }
